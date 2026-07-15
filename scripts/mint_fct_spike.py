@@ -226,6 +226,7 @@ def extract_manifest_context(manifest: dict[str, Any], module_key: str | None) -
     module_type = None
     module = None
     if module_key:
+        # Search for the specific module by key.
         for candidate_type, entries in modules.items():
             if not isinstance(entries, list):
                 continue
@@ -236,6 +237,27 @@ def extract_manifest_context(manifest: dict[str, Any], module_key: str | None) -
                     break
             if module is not None:
                 break
+    else:
+        # No module_key specified — auto-detect the first non-trigger, non-function module.
+        # Prefer macro > page > panel > global-page etc. for FCT minting purposes.
+        preferred_types = ["macro", "globalPage", "issuePage", "issuePanel", "projectPage", "adminPage"]
+        for preferred in preferred_types:
+            entries = modules.get(preferred) or []
+            if isinstance(entries, list) and entries:
+                module = entries[0]
+                module_type = preferred
+                module_key = module.get("key")
+                break
+        if module is None:
+            # Fall back to first available module of any type.
+            for candidate_type, entries in modules.items():
+                if candidate_type in ("function", "trigger", "scheduledTrigger", "webtrigger", "endpoint"):
+                    continue
+                if isinstance(entries, list) and entries:
+                    module = entries[0]
+                    module_type = candidate_type
+                    module_key = module.get("key")
+                    break
 
     app_id = app.get("id")
     # Extract bare UUID from app ARI e.g. ari:cloud:ecosystem::app/8bdd65d0-... -> 8bdd65d0-...

@@ -1,4 +1,5 @@
 # Confluence FCT minting config — FULL version (all known fields included).
+# Emulates a full FCT request from Confluence macro as seen through BurpSuite.
 #
 # Fields marked # MANUAL were tested and found unnecessary for minting.
 # Use mint_fct_min_info.confluence.yaml for the minimal working version.
@@ -65,15 +66,6 @@ mutation: |
 
 # Paste the full Cookie header value from a live Burp capture or DevTools here.
 # The gateway validates the full cookie context including AWSALB, io, xsrf tokens etc.
-#
-# How to get it:
-#   Option A (Burp): Proxy → HTTP History → find any request to lhe2.atlassian.net
-#                    → copy the entire Cookie header value
-#   Option B (DevTools): Network tab → any request → Request Headers → Cookie
-#                        → copy the entire value
-#
-# Paste the raw cookie string (everything after "Cookie: ") into ./session-cookie.txt
-# Do NOT commit session-cookie.txt — it is gitignored.
 auth:
   type: raw_cookie
   raw_cookie_file: "./session-cookie.txt"
