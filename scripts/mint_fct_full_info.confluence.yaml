@@ -1,12 +1,15 @@
-# Confluence-only Forge Context Token minting spike config.
+# Confluence FCT minting config — FULL version (all known fields included).
+#
+# Fields marked # MANUAL were tested and found unnecessary for minting.
+# Use mint_fct_min_info.confluence.yaml for the minimal working version.
 #
 # Usage:
 #   python3 scripts/mint_fct_spike.py \
-#     --app-dir ./test-apps/basic \
-#     --config ./scripts/mint_fct_spike.confluence.example.yaml \
+#     --app-dir /path/to/your/forge-app \
+#     --config ./scripts/mint_fct_full_info.confluence.yaml \
 #     --dry-run
 #
-# Then remove --dry-run once the endpoint/auth/input shape is correct.
+# Then remove --dry-run once ready.
 #
 # WARNING: The spike prints cookies/tokens by default because this is intended for
 # local investigation only. Do not paste output into public tickets, logs, or chat.
@@ -80,13 +83,13 @@ auth:
 confluence:
   cloud_id: "c9376ebe-9f83-43ad-921d-2d6ed561bde4"
   account_id: "712020:0b63737a-2ddb-4ed4-9b46-cae44383ac99"
-  content_id: "12353537"
-  space_key: "~7120200b63737a2ddb4ed49b46cae44383ac99"
-  space_id: "1277955"
+  content_id: "12353537" 
+  space_key: "~7120200b63737a2ddb4ed49b46cae44383ac99" 
+  space_id: "1277955" 
   installation_id: "2690fda2-67ef-454b-b479-009b3f6ab5fe"
   environment_id: "96b19e70-50b3-4b31-8e6e-b023414a9795"
   environment_type: "DEVELOPMENT"
-  local_id: "abce9c59-181b-4d7a-9c38-c0586eb95346"
+  local_id: "abce9c59-181b-4d7a-9c38-c0586eb95346" 
   module_key: "forge-remote-app-node"
   site_url: "https://lhe2.atlassian.net"
 
@@ -119,28 +122,28 @@ variables:
         appVersion: "2.7.0"
         moduleKey: "${manifest.module_key}"
         type: "macro"
-        contentId: "${config.confluence.content_id}"
-        spaceKey: "${config.confluence.space_key}"
+        contentId: "${config.confluence.content_id}" 
+        spaceKey: "${config.confluence.space_key}" 
         siteUrl: "${config.confluence.site_url}"
-        localId: "${config.confluence.local_id}"
+        localId: "${config.confluence.local_id}" 
         environmentId: "${config.confluence.environment_id}"
         environmentType: "${config.confluence.environment_type}"
-        content:
-          id: "${config.confluence.content_id}"
-          type: "page"
-          subtype: null
-          version: 7
-        space:
-          id: "${config.confluence.space_id}"
-          key: "${config.confluence.space_key}"
-        macro: null
+        content: 
+          id: "${config.confluence.content_id}" 
+          type: "page" 
+          subtype: null 
+          version: 7 
+        space: 
+          id: "${config.confluence.space_id}" 
+          key: "${config.confluence.space_key}" 
+        macro: null 
         extension:
           type: "macro"
-          content:
-            id: "${config.confluence.content_id}"
-            type: "page"
-            subtype: null
-            version: 7
-          space:
-            id: "${config.confluence.space_id}"
-            key: "${config.confluence.space_key}"
+          content: 
+            id: "${config.confluence.content_id}" 
+            type: "page" 
+            subtype: null 
+            version: 7 
+          space: 
+            id: "${config.confluence.space_id}" 
+            key: "${config.confluence.space_key}" 

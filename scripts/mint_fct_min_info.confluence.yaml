@@ -1,0 +1,85 @@
+# Confluence FCT minting config — MINIMAL version (only confirmed-required fields).
+#
+# Fields marked # MANUAL in mint_fct_full_info.confluence.yaml were tested and
+# found unnecessary — they are omitted here.
+#
+# Usage:
+#   python3 scripts/mint_fct_spike.py \
+#     --app-dir /path/to/your/forge-app \
+#     --config ./scripts/mint_fct_min_info.confluence.yaml \
+#     --dry-run
+#
+# Then remove --dry-run once ready.
+#
+# WARNING: The spike prints cookies/tokens by default because this is intended for
+# local investigation only. Do not paste output into public tickets, logs, or chat.
+
+product: confluence
+
+# Usually the Atlassian GraphQL gateway for the target site. Confirm the exact
+# endpoint while testing the mutation.
+graphql_endpoint: "https://lhe2.atlassian.net/gateway/api/graphql"
+
+# Confirmed working mutation shape.
+mutation: |
+  mutation useGetContextTokenMutation($cloudId: ID!, $input: ConfluenceForgeContextTokenRequestInput!) {
+    confluence_generateForgeContextToken(cloudId: $cloudId, input: $input) {
+      success
+      errors {
+        message
+        __typename
+      }
+      forgeContextToken {
+        jwt
+        expiresAt
+        extensionId
+        __typename
+      }
+      __typename
+    }
+  }
+
+# Paste the full Cookie header value from a live Burp capture or DevTools here.
+# The gateway validates the full cookie context including AWSALB, io, xsrf tokens etc.
+#
+# How to get it:
+#   Option A (Burp): Proxy → HTTP History → find any request to YOUR-SITE.atlassian.net
+#                    → copy the entire Cookie header value
+#   Option B (DevTools): Network tab → any request → Request Headers → Cookie
+#                        → copy the entire value
+#
+# Paste the raw cookie string (everything after "Cookie: ") into ./session-cookie.txt
+# Do NOT commit session-cookie.txt — add it to .gitignore.
+auth:
+  type: raw_cookie
+  raw_cookie_file: "./session-cookie.txt"
+
+# Minimum required fields — all can be derived from manifest.yml + forge CLI.
+confluence:
+  cloud_id: "c9376ebe-9f83-43ad-921d-2d6ed561bde4"  # curl https://YOUR-SITE.atlassian.net/_edge/tenant_info
+  installation_id: "2690fda2-67ef-454b-b479-009b3f6ab5fe"  # forge install list --json → installationId (bare UUID)
+  environment_id: "96b19e70-50b3-4b31-8e6e-b023414a9795"   # forge install list --json or forge environments list
+  environment_type: "DEVELOPMENT"                           # DEVELOPMENT or PRODUCTION
+  module_key: "forge-remote-app-node"                       # manifest.yml → modules.<type>[0].key
+  site_url: "https://lhe2.atlassian.net"
+
+# Minimum variables — confirmed sufficient to mint a valid FCT.
+variables:
+  cloudId: "${config.confluence.cloud_id}"
+  input:
+    contextIds:
+      - 'ari:cloud:confluence::site/${config.confluence.cloud_id}'
+    extensionSpecificContexts:
+      appVersion: "1.0.0"
+      extensionId: "ari:cloud:ecosystem::extension/${manifest.app_id_bare}/${config.confluence.environment_id}/static/${manifest.module_key}"
+      extensionType: "xen:macro"
+      installationId: "${config.confluence.installation_id}"
+      context:
+        appVersion: "1.0.0"
+        moduleKey: "${manifest.module_key}"
+        type: "macro"
+        siteUrl: "${config.confluence.site_url}"
+        environmentId: "${config.confluence.environment_id}"
+        environmentType: "${config.confluence.environment_type}"
+        extension:
+          type: "macro"

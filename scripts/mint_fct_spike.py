@@ -495,11 +495,6 @@ def main() -> int:
                     print(f"    - {err.get('message')}")
             elif token_obj is None:
                 print("\n[!] forgeContextToken is null — server accepted the request but returned no token.")
-                print("    Possible causes:")
-                print("    - installationId does not match the app+site combination")
-                print("    - extensionId (app ARI) does not match the installation")
-                print("    - contentId is not accessible to this app")
-                print("    - the app is not actually installed on this site/product")
         except json.JSONDecodeError:
             print(response_text)
         return 0 if 200 <= status < 300 else 1
