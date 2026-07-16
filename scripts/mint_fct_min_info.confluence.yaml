@@ -42,8 +42,23 @@ mutation: |
 # Paste the full Cookie header value from a live Burp capture or DevTools here.
 # The gateway validates the full cookie context including AWSALB, io, xsrf tokens etc.
 auth:
-  type: raw_cookie
-  raw_cookie_file: "./session-cookie.txt"
+  # Switch between auth types by changing 'type'. Only one block is active at a time.
+
+  # Option 1: Raw cookie (confirmed working — ~30 day lifetime)
+  # type: raw_cookie
+  # raw_cookie_file: "./session-cookie.txt"
+  # Format of session-cookie.txt:
+  #   tenant.session.token=eyJ...; atlassian.xsrf.token=5748ec3f...
+
+  # Option 2: API token (TESTING — may not require browser session at all)
+  # Generate at: https://id.atlassian.com/manage-profile/security/api-tokens
+  type: basic_api_token
+  email: "lhe2@atlassian.com"
+  api_token_file: "./api-token.txt"  # paste your API token into this file
+
+  # Option 3: Bearer token (Forge CLI OAuth token — TESTING)
+  # type: bearer_token
+  # bearer_token_file: "./bearer-token.txt"  # paste token from ~/.forge/credentials
 
 # Confirmed required fields — derived from manifest.yml + forge CLI.
 confluence:

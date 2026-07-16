@@ -1,1 +1,4 @@
 /target
+session-cookie.txt
+api-token.txt
+bearer-token.txt
