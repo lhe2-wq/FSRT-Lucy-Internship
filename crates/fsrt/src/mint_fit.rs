@@ -16,6 +16,7 @@
 // ============================================================================
 
 use super::mint_common::{
+    Product,
     build_auth_headers,
     detect_remote_key,
     extract_manifest_context,
@@ -89,13 +90,6 @@ pub fn run_mint_fit(args: &MintFitArgs) -> std::result::Result<(), Box<dyn std::
     let config_text = fs::read_to_string(&args.config)?;
     let config: MintFctConfig = serde_yaml::from_str(&config_text)?;
 
-    if config.product != "confluence" {
-        return Err(MintError::Config(
-            "mint-fit is Confluence-only. Set `product: confluence` in your config.".into(),
-        )
-        .into());
-    }
-
     // --- 2. Load manifest.yml ---
     // load_manifest() returns (raw_text, raw_json_value).
     // raw_text is kept alive so ForgeManifest can borrow from it.
@@ -106,10 +100,16 @@ pub fn run_mint_fit(args: &MintFitArgs) -> std::result::Result<(), Box<dyn std::
     // --- 3. Extract manifest context ---
     // module_key — for the FCT minting step (same as mint-fct)
     // remote_key — for the FIT minting step (new — from manifest["remotes"][0]["key"])
-    let config_module_key = config
-        .confluence
-        .as_ref()
-        .and_then(|c| c.module_key.as_deref());
+    let config_module_key = match config.product {
+        Product::Confluence => config
+            .confluence
+            .as_ref()
+            .and_then(|c| c.module_key.as_deref()),
+        Product::Global => config
+            .global
+            .as_ref()
+            .and_then(|g| g.module_key.as_deref()),
+    };
 
     let manifest_ctx = extract_manifest_context(&manifest, &raw_manifest, config_module_key);
 

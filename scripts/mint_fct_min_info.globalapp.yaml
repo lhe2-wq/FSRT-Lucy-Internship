@@ -1,0 +1,60 @@
+# Global app FCT minting config — jira-damn-vulnerable-forge-app
+#
+# Test app: test-apps/jira-damn-vulnerable-forge-app
+# App ID:   ari:cloud:ecosystem::app/22948e9c-8414-4d24-bd45-f0dc7428608f
+#
+# Calls globalApp_signForgeContextTokens on XIS (Xen Invocation Service).
+#
+# Usage:
+#   fsrt mint-fct --app-dir test-apps/jira-damn-vulnerable-forge-app \
+#     --config ./scripts/mint_fct_min_info.globalapp.yaml [--dry-run]
+#
+# WARNING: This file may contain tokens. Do not paste output into public
+# tickets, logs, or chat.
+
+product: global
+
+# Atlassian GraphQL gateway for the target site.
+graphql_endpoint: "https://lhe2.atlassian.net/gateway/api/graphql"
+
+auth:
+  # globalApp_signForgeContextTokens requires SESSION auth — API tokens are rejected
+  # by forge_apps_bff with 403 IncorrectAuthException.
+  # Capture the Cookie header from a live browser session via Burp/DevTools.
+  type: raw_cookie
+  raw_cookie_file: "./session-cookie.txt"
+
+  # Option 2: API token — NOT supported for this mutation (forge_apps_bff rejects it)
+  # type: basic_api_token
+  # email: "lhe2@atlassian.com"
+  # api_token_file: "./api-token.txt"
+
+# Global app IDs — required fields.
+global:
+  cloud_id: "c9376ebe-9f83-43ad-921d-2d6ed561bde4"            # curl https://YOUR-SITE.atlassian.net/_edge/tenant_info
+  installation_id: "4a5b78d5-ffac-429a-8e81-cc78536c32eb"     # forge install list --json → installationId (bare UUID)
+  environment_id: "bc237ecd-0bbf-4923-9378-beec6192b5f3"      # forge environments list → environment UUID
+
+  # Pick one of the jira:* module keys from the manifest:
+  #   damn-vulnerable-jira-forge-app-hello-world-admin-page  (jira:adminPage)
+  #   damn-vulnerable-jira-forge-app-issue-glance            (jira:issueGlance)
+  #   damn-vulnerable-jira-forge-app-global-page             (jira:globalPage)
+  #   damn-vulnerable-jira-forge-app-issue-panel             (jira:issuePanel)
+  #   damn-vulnerable-jira-forge-app-issue-project           (jira:projectPage)
+  #   damn-vulnerable-jira-forge-app-issue-settings          (jira:projectSettingsPage)
+  #   damn-vulnerable-jira-forge-app-gadget                  (jira:dashboardGadget)
+  module_key: "hello-jira-issue-panel"
+
+# Override the default GraphQL variables with unlicensed: true to bypass
+# license checks during testing.
+variables:
+  input:
+    contextIds:
+      - "ari:cloud:jira::site/${config.global.cloud_id}"
+    unlicensed: true
+    extensionContexts:
+      - appVersion: "1.0.0"
+        extensionId: "ari:cloud:ecosystem::extension/${manifest.app_id_bare}/${config.global.environment_id}/static/${manifest.module_key}"
+        extensionType: "xen:issuePanel"
+        installationId: "${config.global.installation_id}"
+        context: {}

@@ -15,12 +15,13 @@
 // mint_common are siblings under the same crate root (main.rs).
 use super::mint_common::{
     MintFctConfig,
-    MintError,
+    Product,
     build_auth_headers,
     extract_manifest_context,
     load_manifest,
     mint_fct_jwt,
     DEFAULT_CONFLUENCE_MUTATION,
+    DEFAULT_GLOBAL_APP_MUTATION,
 };
 
 use forge_loader::manifest::ForgeManifest;
@@ -64,14 +65,6 @@ pub fn run_mint_fct(args: &MintFctArgs) -> std::result::Result<(), Box<dyn std::
     let config_text = fs::read_to_string(&args.config)?;
     let config: MintFctConfig = serde_yaml::from_str(&config_text)?;
 
-    // Validate product — only "confluence" is supported right now.
-    if config.product != "confluence" {
-        return Err(MintError::Config(
-            "This subcommand is Confluence-only. Set `product: confluence` in your config.".into(),
-        )
-        .into());
-    }
-
     // --- 2. Load manifest.yml ---
     // load_manifest() returns (raw_yaml_text, raw_json_value).
     // We need the raw text to parse into ForgeManifest (which borrows from it),
@@ -83,11 +76,18 @@ pub fn run_mint_fct(args: &MintFctArgs) -> std::result::Result<(), Box<dyn std::
     let manifest: ForgeManifest<'_> = serde_yaml::from_str(&manifest_text)?;
 
     // --- 3. Extract manifest context ---
-    // Use the module_key from the config if provided, otherwise auto-detect.
-    let config_module_key = config
-        .confluence
-        .as_ref()
-        .and_then(|c| c.module_key.as_deref());
+    // Use the module_key from the product-specific config section if provided,
+    // otherwise auto-detect from the manifest.
+    let config_module_key = match config.product {
+        Product::Confluence => config
+            .confluence
+            .as_ref()
+            .and_then(|c| c.module_key.as_deref()),
+        Product::Global => config
+            .global
+            .as_ref()
+            .and_then(|g| g.module_key.as_deref()),
+    };
 
     let manifest_ctx = extract_manifest_context(&manifest, &raw_manifest, config_module_key);
 
@@ -95,6 +95,8 @@ pub fn run_mint_fct(args: &MintFctArgs) -> std::result::Result<(), Box<dyn std::
     let auth_headers = build_auth_headers(&config.auth)?;
 
     // --- 5. Print diagnostic info ---
+    println!("\n=== Product ===");
+    println!("  {}", config.product);
     println!("\n=== Derived manifest context ===");
     println!("  app_id:      {}", manifest_ctx.app_id);
     println!("  app_id_bare: {}", manifest_ctx.app_id_bare);
@@ -104,9 +106,13 @@ pub fn run_mint_fct(args: &MintFctArgs) -> std::result::Result<(), Box<dyn std::
     println!("\n=== GraphQL endpoint ===");
     println!("{}", config.graphql_endpoint);
     println!("\n=== GraphQL mutation ===");
+    let default_mutation = match config.product {
+        Product::Confluence => DEFAULT_CONFLUENCE_MUTATION,
+        Product::Global => DEFAULT_GLOBAL_APP_MUTATION,
+    };
     println!(
         "{}",
-        config.mutation.as_deref().unwrap_or(DEFAULT_CONFLUENCE_MUTATION)
+        config.mutation.as_deref().unwrap_or(default_mutation)
     );
 
     // --- 6. Dry-run exit ---

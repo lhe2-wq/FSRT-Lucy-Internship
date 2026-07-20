@@ -25,8 +25,7 @@ use forge_loader::manifest::ForgeManifest;
 // Constants
 // ============================================================================
 
-// The default FCT mutation — used when the config file does not supply one.
-// Identical to DEFAULT_CONFLUENCE_MUTATION in the original mint_fct_spike.py.
+// The default FCT mutation for Confluence apps.
 pub const DEFAULT_CONFLUENCE_MUTATION: &str = r#"mutation useGetContextTokenMutation($cloudId: ID!, $input: ConfluenceForgeContextTokenRequestInput!) {
   confluence_generateForgeContextToken(cloudId: $cloudId, input: $input) {
     success
@@ -44,7 +43,29 @@ pub const DEFAULT_CONFLUENCE_MUTATION: &str = r#"mutation useGetContextTokenMuta
   }
 }"#;
 
-pub const FCT_OPERATION_NAME: &str = "useGetContextTokenMutation";
+pub const CONFLUENCE_OPERATION_NAME: &str = "useGetContextTokenMutation";
+
+// The default FCT mutation for global apps (Jira, Compass, Rovo, etc.).
+// Calls globalApp_signForgeContextTokens on XIS (Xen Invocation Service).
+// NOTE: Response returns a list of tokens (one per extensionContext entry).
+pub const DEFAULT_GLOBAL_APP_MUTATION: &str = r#"mutation SignForgeContextToken($input: GlobalAppSignForgeContextTokensInput!) {
+  globalApp_signForgeContextTokens(input: $input) {
+    success
+    errors {
+      message
+      __typename
+    }
+    tokens {
+      jwt
+      expiresAt
+      extensionId
+      __typename
+    }
+    __typename
+  }
+}"#;
+
+pub const GLOBAL_APP_OPERATION_NAME: &str = "SignForgeContextToken";
 
 // ============================================================================
 // Error type
@@ -85,6 +106,30 @@ pub type Result<T> = std::result::Result<T, MintError>;
 // These deserialise from the YAML config files in `scripts/`.
 // Both `mint_fct` and `mint_fit` use the same YAML format.
 
+// Which Atlassian product the FCT/FIT is being minted for.
+// Controls which GraphQL mutation is used:
+//   Confluence → confluence_generateForgeContextToken
+//   GlobalApp  → globalApp_signForgeContextTokens
+//
+// Set via `product:` in the YAML config file:
+//   product: confluence
+//   product: global
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Product {
+    Confluence,
+    Global,
+}
+
+impl std::fmt::Display for Product {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Product::Confluence => write!(f, "confluence"),
+            Product::Global => write!(f, "global"),
+        }
+    }
+}
+
 // `#[derive(Debug, Deserialize, Serialize)]`:
 //   Debug       → printable for logging (`println!("{:?}", ...)`)
 //   Deserialize → can be built from YAML text (`serde_yaml::from_str`)
@@ -92,9 +137,9 @@ pub type Result<T> = std::result::Result<T, MintError>;
 //                 needed because we embed the whole config as the template context
 #[derive(Debug, Deserialize, Serialize)]
 pub struct MintFctConfig {
-    // Which Atlassian product. Only "confluence" supported right now.
-    #[serde(default = "default_product")]
-    pub product: String,
+    // Which Atlassian product to mint the token for.
+    // Required — must be "confluence" or "global" in the YAML config.
+    pub product: Product,
 
     // The Atlassian GraphQL gateway URL.
     // e.g. "https://lhe2.atlassian.net/gateway/api/graphql"
@@ -107,15 +152,16 @@ pub struct MintFctConfig {
     pub auth: AuthConfig,
 
     // Confluence-specific IDs (cloud_id, installation_id, environment_id, etc.)
+    // Required when product: confluence.
     pub confluence: Option<ConfluenceConfig>,
+
+    // Global app IDs (installation_id, environment_id, etc.)
+    // Required when product: global.
+    pub global: Option<GlobalAppConfig>,
 
     // The GraphQL variables template — an arbitrary JSON/YAML object containing
     // `${...}` placeholders that get substituted at runtime.
     pub variables: Option<JsonValue>,
-}
-
-fn default_product() -> String {
-    "confluence".to_string()
 }
 
 // The `auth:` section of the config.
@@ -161,6 +207,17 @@ pub struct ConfluenceConfig {
     pub local_id: Option<String>,
     pub module_key: Option<String>,
     pub site_url: Option<String>,
+}
+
+// The `global:` section of the config — used when product: global.
+// Mirrors the fields needed to build a GlobalAppSignForgeContextTokensInput.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct GlobalAppConfig {
+    pub cloud_id: Option<String>,
+    pub installation_id: Option<String>,
+    pub environment_id: Option<String>,
+    pub environment_type: Option<String>,
+    pub module_key: Option<String>,
 }
 
 // ============================================================================
@@ -598,16 +655,17 @@ pub fn load_manifest(
 // ============================================================================
 // Builds the final FCT GraphQL variables by rendering the template from the
 // config against the manifest + config context.
+// Branches on config.product to build the correct variable shape for each API.
 pub fn build_variables(
     config: &MintFctConfig,
     manifest_ctx: &ManifestContext,
 ) -> Result<JsonValue> {
-    // Build the template context matching the Python spike exactly:
+    // Build the template context:
     //   { "manifest": {...}, "config": <whole MintFctConfig as JSON> }
     //
-    // This means ${config.confluence.cloud_id} resolves as:
-    //   context["config"]["confluence"]["cloud_id"]
-    // because MintFctConfig has a "confluence" field inside it.
+    // This means ${config.confluence.cloud_id} and ${config.global.cloud_id}
+    // resolve correctly because MintFctConfig has both "confluence" and "global"
+    // fields that serde serialises by name.
     let config_value = serde_json::to_value(config)
         .unwrap_or(JsonValue::Object(Default::default()));
 
@@ -622,27 +680,42 @@ pub fn build_variables(
         "config": config_value,
     });
 
-    // Use the variables template from the config, or fall back to the minimal default.
+    // Use the variables template from the config if supplied — works for both
+    // products. Otherwise fall back to a product-specific minimal default.
     let template: JsonValue = if let Some(vars) = &config.variables {
         vars.clone()
     } else {
-        serde_json::json!({
-            "cloudId": "${config.confluence.cloud_id}",
-            "input": {
-                "contextIds": ["ari:cloud:confluence::site/${config.confluence.cloud_id}"],
-                "extensionSpecificContexts": {
-                    "appVersion": "1.0.0",
-                    "extensionId": "ari:cloud:ecosystem::extension/${manifest.app_id_bare}/${config.confluence.environment_id}/static/${manifest.module_key}",
-                    "extensionType": "xen:macro",
-                    "installationId": "${config.confluence.installation_id}",
-                    "context": {
-                        "type": "${manifest.module_type}",
-                        "environmentId": "${config.confluence.environment_id}",
-                        "extension": { "type": "${manifest.module_type}" }
+        match config.product {
+            Product::Confluence => serde_json::json!({
+                "cloudId": "${config.confluence.cloud_id}",
+                "input": {
+                    "contextIds": ["ari:cloud:confluence::site/${config.confluence.cloud_id}"],
+                    "extensionSpecificContexts": {
+                        "appVersion": "1.0.0",
+                        "extensionId": "ari:cloud:ecosystem::extension/${manifest.app_id_bare}/${config.confluence.environment_id}/static/${manifest.module_key}",
+                        "extensionType": "xen:macro",
+                        "installationId": "${config.confluence.installation_id}",
+                        "context": {
+                            "type": "${manifest.module_type}",
+                            "environmentId": "${config.confluence.environment_id}",
+                            "extension": { "type": "${manifest.module_type}" }
+                        }
                     }
                 }
-            }
-        })
+            }),
+            Product::Global => serde_json::json!({
+                "input": {
+                    "contextIds": ["ari:cloud:ecosystem::site/${config.global.cloud_id}"],
+                    "extensionContexts": [{
+                        "appVersion": "1.0.0",
+                        "extensionId": "ari:cloud:ecosystem::extension/${manifest.app_id_bare}/${config.global.environment_id}/static/${manifest.module_key}",
+                        "extensionType": "xen:globalPage",
+                        "installationId": "${config.global.installation_id}",
+                        "context": {}
+                    }]
+                }
+            }),
+        }
     };
 
     let rendered = render_template(&template, &context);
@@ -673,10 +746,21 @@ pub fn mint_fct_jwt(
     manifest_ctx: &ManifestContext,
     auth_headers: &HashMap<String, String>,
 ) -> Result<String> {
-    let query = config
-        .mutation
-        .as_deref()
-        .unwrap_or(DEFAULT_CONFLUENCE_MUTATION);
+    // Select mutation and operation name based on product.
+    let (default_mutation, operation_name, response_key) = match config.product {
+        Product::Confluence => (
+            DEFAULT_CONFLUENCE_MUTATION,
+            CONFLUENCE_OPERATION_NAME,
+            "confluence_generateForgeContextToken",
+        ),
+        Product::Global => (
+            DEFAULT_GLOBAL_APP_MUTATION,
+            GLOBAL_APP_OPERATION_NAME,
+            "globalApp_signForgeContextTokens",
+        ),
+    };
+
+    let query = config.mutation.as_deref().unwrap_or(default_mutation);
 
     let variables = build_variables(config, manifest_ctx)?;
 
@@ -689,7 +773,7 @@ pub fn mint_fct_jwt(
 
     let (status, body) = post_graphql(
         &config.graphql_endpoint,
-        FCT_OPERATION_NAME,
+        operation_name,
         auth_headers,
         query,
         &variables,
@@ -705,11 +789,12 @@ pub fn mint_fct_jwt(
     })?;
     println!("{}", serde_json::to_string_pretty(&parsed)?);
 
-    // Navigate to the FCT JWT in the response tree.
-    // data.confluence_generateForgeContextToken.forgeContextToken.jwt
+    // Navigate to the FCT JWT in the response tree using the product-specific key.
+    // Confluence: data.confluence_generateForgeContextToken.forgeContextToken.jwt
+    // Global:     data.globalApp_signForgeContextTokens.tokens[0].jwt
     let fct_obj = parsed
         .get("data")
-        .and_then(|d| d.get("confluence_generateForgeContextToken"));
+        .and_then(|d| d.get(response_key));
 
     let success = fct_obj
         .and_then(|o| o.get("success"))
@@ -735,14 +820,27 @@ pub fn mint_fct_jwt(
         }));
     }
 
-    // Extract the JWT string.
-    let jwt = fct_obj
-        .and_then(|o| o.get("forgeContextToken"))
-        .and_then(|t| t.get("jwt"))
-        .and_then(|j| j.as_str())
-        .ok_or_else(|| {
-            MintError::FctFailed("forgeContextToken.jwt missing from response".to_string())
-        })?;
+    // Extract the JWT string — path differs by product:
+    //   Confluence: .forgeContextToken.jwt  (single object)
+    //   Global:     .tokens[0].jwt           (list, take first)
+    let jwt = match config.product {
+        Product::Confluence => fct_obj
+            .and_then(|o| o.get("forgeContextToken"))
+            .and_then(|t| t.get("jwt"))
+            .and_then(|j| j.as_str())
+            .ok_or_else(|| {
+                MintError::FctFailed("forgeContextToken.jwt missing from response".to_string())
+            })?,
+        Product::Global => fct_obj
+            .and_then(|o| o.get("tokens"))
+            .and_then(|t| t.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|t| t.get("jwt"))
+            .and_then(|j| j.as_str())
+            .ok_or_else(|| {
+                MintError::FctFailed("tokens[0].jwt missing from response".to_string())
+            })?,
+    };
 
     Ok(jwt.to_string())
 }
