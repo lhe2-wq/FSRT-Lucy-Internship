@@ -1,10 +1,11 @@
 #![allow(clippy::type_complexity)]
 
 mod forge_project;
+mod mint_fct;
 #[cfg(test)]
 mod test;
 
-use clap::{Parser, ValueHint};
+use clap::{Parser, Subcommand, ValueHint};
 use forge_permission_resolver::{
     permissions_cache::CacheConfig,
     permissions_resolver::{
@@ -53,9 +54,25 @@ use walkdir::WalkDir;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+// The top-level subcommand enum.
+// `#[derive(Subcommand)]` tells clap this is a set of mutually exclusive commands.
+// When the user runs `fsrt mint-fct ...`, clap fills in `Command::MintFct`.
+// When no subcommand is given, `command` is None and we fall through to the
+// existing scan behaviour — so nothing breaks for current users.
+#[derive(Subcommand, Debug)]
+pub enum Command {
+    /// Mint a Forge Context Token (FCT) for a Confluence app.
+    /// Equivalent to running scripts/mint_fct_spike.py.
+    MintFct(mint_fct::MintFctArgs),
+}
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
+    // The optional subcommand — if present, we route to it instead of scanning.
+    #[command(subcommand)]
+    command: Option<Command>,
+
     #[arg(short, long)]
     debug: bool,
 
@@ -834,6 +851,15 @@ fn main() -> Result<()> {
         .with(HierarchicalLayer::new(2))
         .with(EnvFilter::from_env("FORGE_LOG"))
         .init();
+
+    // Check if a subcommand was given.
+    // If the user ran `fsrt mint-fct ...`, route to run_mint_fct() and exit.
+    // If no subcommand was given, fall through to the existing scan behaviour —
+    // so `fsrt /path/to/app` keeps working exactly as before.
+    if let Some(Command::MintFct(mint_fct_args)) = &args.command {
+        return mint_fct::run_mint_fct(mint_fct_args);
+    }
+
     let dirs = std::mem::take(&mut args.dirs);
 
     let secretdata_file = include_str!("../../../secretdata.yaml");
