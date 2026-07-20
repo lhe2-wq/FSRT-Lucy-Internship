@@ -8,24 +8,137 @@ A static analysis tool for finding common [Forge][1] vulnerabilities.
 
 ## Usage
 
+`fsrt` has two subcommands: `scan` (the default) and `mint-fct`.
+
+### Scanning a Forge app for vulnerabilities
+
+```sh
+# Scan a specific directory
+fsrt ./path/to/your-forge-app
+
+# Scan with a specific GraphQL schema
+fsrt --graphql-schema-path ./path/to/schema.graphql ./path/to/your-forge-app
+
+# Scan and write results to a file instead of stdout
+fsrt --out results.json ./path/to/your-forge-app
+
+# Scan a specific entrypoint function only
+fsrt --function myResolverFunction ./path/to/your-forge-app
+```
+
+Full options:
+
 ```text
-Usage: fsrt [OPTIONS] [DIRS]...
+Usage: fsrt [OPTIONS] [DIRS]... [COMMAND]
 
 Arguments:
-  [DIRS]...  The directory to scan. Assumes there is a `manifest.yaml` file in the top level directory, and that the source code is located in `src/`
+  [DIRS]...  The directory to scan. Assumes there is a `manifest.ya?ml` file in the top
+             level directory, and that the source code is located in `src/`
 
-  Options:
-    -d, --debug
-        --dump-ir <DUMP_IR>                 Dump the IR for the specified function
-    -dt, --dump-dt <DUMP_DOM_TREE>          Dump the Dominator Tree for the specified app
-    -f, --function <FUNCTION>               A specific function to scan, must be an entrypoint specified in `manifest.yml`
-    -h, --help                              Print help information
-    -V, --version                           Print version information
-    --check-permissions                     Runs the permission checker
-    --cached-permissions                    Uses cached swagger permissions to avoid redownloading them
-    --cached-permissions-path <LOCATION>    Uses the designated cache location, otherwise selects ~/.cache dir 
-    --graphql-schema-path <LOCATION>        Uses the graphql schema in location; othwerwise selects ~/.config dir  
+Options:
+  -d, --debug
+      --dump-ir <DUMP_IR>                                  Dump the IR for the specified function
+      --dump-dt <DUMP_DT>                                  Dump the Dominator Tree for specified file
+  -f, --function <FUNCTION>                                A specific function to scan. Must be an
+                                                           entrypoint specified in `manifest.yml`
+      --appkey <APPKEY>                                    The Marketplace app key
+  -o, --out <OUT>                                          A file to redirect output to
+      --graphql-schema-path <GRAPHQL_SCHEMA_PATH>
+      --no-cache                                           Disable cached permissions and re-download
+                                                           Swagger files
+      --cached-permissions-path <CACHED_PERMISSIONS_PATH>  Path to store or load cached permissions.
+                                                           Defaults to `~/.cache/fsrt`
+      --scanners <SCANNERS>                                List of scanners to enable. Defaults to all
+      --scan-functions                                     Scan all function/closure bodies for
+                                                           auth-header issues
+  -h, --help                                               Print help
+  -V, --version                                            Print version
 ```
+
+### Minting a Forge Context Token (FCT) — `mint-fct`
+
+The `mint-fct` subcommand is a Rust port of `scripts/mint_fct_spike.py`. It mints a
+Forge Context Token (FCT) for a Confluence Forge app by sending a GraphQL mutation to
+the Atlassian gateway. This is useful for security testing and local investigation of
+FCT-authenticated endpoints.
+
+```sh
+fsrt mint-fct --app-dir <APP_DIR> --config <CONFIG> [--dry-run]
+```
+
+```text
+Options:
+      --app-dir <APP_DIR>  Forge app directory containing manifest.yml  [required]
+      --config <CONFIG>    Path to the FCT config YAML file             [required]
+      --dry-run            Print request details but do not call GraphQL
+  -h, --help               Print help
+```
+
+#### Step 1 — Choose a config file
+
+Two example config files are provided in `scripts/`:
+
+| File | When to use |
+|---|---|
+| `scripts/mint_fct_min_info.confluence.yaml` | Start here — only the confirmed-required fields |
+| `scripts/mint_fct_full_info.confluence.yaml` | Full field set, mirrors a live Burp capture |
+
+Copy the one you want and fill in your values:
+
+```sh
+cp scripts/mint_fct_min_info.confluence.yaml my-config.yaml
+```
+
+#### Step 2 — Fill in the config
+
+The config requires these values (see comments inside the file for how to find each one):
+
+```yaml
+product: confluence
+graphql_endpoint: "https://YOUR-SITE.atlassian.net/gateway/api/graphql"
+
+auth:
+  # Option A: raw cookie from Burp/DevTools (~30 day lifetime, confirmed working)
+  type: raw_cookie
+  raw_cookie_file: "./session-cookie.txt"   # paste your full Cookie header here
+
+  # Option B: Atlassian API token (generate at id.atlassian.com)
+  # type: basic_api_token
+  # email: "you@atlassian.com"
+  # api_token_file: "./api-token.txt"
+
+confluence:
+  cloud_id: "..."          # curl https://YOUR-SITE.atlassian.net/_edge/tenant_info
+  installation_id: "..."   # forge install list --json → installationId
+  environment_id: "..."    # forge install list --json or forge environments list
+```
+
+#### Step 3 — Dry run first
+
+Always verify the rendered request before sending it:
+
+```sh
+fsrt mint-fct \
+  --app-dir ./path/to/your-forge-app \
+  --config ./my-config.yaml \
+  --dry-run
+```
+
+This prints the manifest context, the rendered GraphQL variables, and the auth headers
+**without making any network request**. Verify the values look correct.
+
+#### Step 4 — Mint the token
+
+```sh
+fsrt mint-fct \
+  --app-dir ./path/to/your-forge-app \
+  --config ./my-config.yaml
+```
+
+On success, the JWT is printed under `=== SUCCESS: Forge Context Token ===`.
+
+> **WARNING:** The output includes auth material (cookies/tokens). Do not paste it into
+> public tickets, logs, Slack, or chat.
 
 ## Installation
 
