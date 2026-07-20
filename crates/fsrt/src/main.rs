@@ -1,7 +1,9 @@
 #![allow(clippy::type_complexity)]
 
 mod forge_project;
+mod mint_common;
 mod mint_fct;
+mod mint_fit;
 #[cfg(test)]
 mod test;
 
@@ -64,6 +66,10 @@ pub enum Command {
     /// Mint a Forge Context Token (FCT) for a Confluence app.
     /// Equivalent to running scripts/mint_fct_spike.py.
     MintFct(mint_fct::MintFctArgs),
+
+    /// Mint a Forge Invocation Token (FIT) for a Confluence app with a remote backend.
+    /// Internally mints an FCT first, then uses it to mint the FIT in one command.
+    MintFit(mint_fit::MintFitArgs),
 }
 
 #[derive(Parser, Debug)]
@@ -858,6 +864,10 @@ fn main() -> Result<()> {
     // so `fsrt /path/to/app` keeps working exactly as before.
     if let Some(Command::MintFct(mint_fct_args)) = &args.command {
         return mint_fct::run_mint_fct(mint_fct_args);
+    }
+
+    if let Some(Command::MintFit(mint_fit_args)) = &args.command {
+        return mint_fit::run_mint_fit(mint_fit_args);
     }
 
     let dirs = std::mem::take(&mut args.dirs);
