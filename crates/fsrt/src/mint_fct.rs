@@ -142,7 +142,7 @@ pub struct MintFctArgs {
 //
 // `#[serde(default)]` on a field means "if this key is missing from the YAML,
 // use the type's Default value" (e.g. None for Option, empty string for String).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct MintFctConfig {
     // Which Atlassian product this config targets. Only "confluence" is
     // supported right now, matching the Python spike.
@@ -180,7 +180,7 @@ fn default_product() -> String {
 // Supports two auth types:
 //   "raw_cookie"      — paste the full Cookie header from Burp/DevTools
 //   "basic_api_token" — Atlassian API token (email + token file)
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct AuthConfig {
     // The auth type string from YAML: "raw_cookie" or "basic_api_token".
     // We default to "raw_cookie" if not specified.
@@ -587,11 +587,25 @@ pub fn build_variables(
     config: &MintFctConfig,
     manifest_ctx: &ManifestContext,
 ) -> Result<JsonValue> {
-    // Build the template context as a JSON object with two keys:
-    //   "manifest" → ManifestContext fields
-    //   "config"   → the raw config (so ${config.confluence.cloud_id} works)
+    // Build the template context matching the Python spike exactly:
     //
-    // `serde_json::json!({...})` is a macro that builds a JsonValue inline.
+    //   context = {
+    //       "manifest": manifest_context,   ← ManifestContext fields
+    //       "config":   config,             ← the WHOLE config dict
+    //   }
+    //
+    // This means ${config.confluence.cloud_id} resolves as:
+    //   context["config"]["confluence"]["cloud_id"]
+    //
+    // because the whole MintFctConfig is at "config", which has a "confluence"
+    // key inside it — exactly matching the YAML config file structure.
+    //
+    // We serialise MintFctConfig to a JsonValue so it can be walked by
+    // render_template(). The `#[derive(Serialize)]` on MintFctConfig and
+    // ConfluenceConfig makes this possible.
+    let config_value = serde_json::to_value(config)
+        .unwrap_or(JsonValue::Object(Default::default()));
+
     let context = serde_json::json!({
         "manifest": {
             "app_id":      manifest_ctx.app_id,
@@ -600,8 +614,7 @@ pub fn build_variables(
             "module_key":  manifest_ctx.module_key,
             "module_type": manifest_ctx.module_type,
         },
-        "config": serde_json::to_value(config.confluence.clone())
-            .unwrap_or(JsonValue::Object(Default::default())),
+        "config": config_value,
     });
 
     // Use the variables from the config file, or fall back to the minimal default.
