@@ -1,52 +1,63 @@
-# Global app FCT minting config — jira-damn-vulnerable-forge-app
-#
-# Test app: test-apps/jira-damn-vulnerable-forge-app
-# App ID:   ari:cloud:ecosystem::app/22948e9c-8414-4d24-bd45-f0dc7428608f
+# Global app FCT minting config — MINIMAL version (only confirmed-required fields).
 #
 # Calls globalApp_signForgeContextTokens on XIS (Xen Invocation Service).
+# Tested against: local jira-testing-app
 #
 # Usage:
-#   fsrt mint-fct --app-dir test-apps/jira-damn-vulnerable-forge-app \
-#     --config ./scripts/mint_fct_min_info.globalapp.yaml [--dry-run]
+#   fsrt mint-fct \
+#     --app-dir /path/to/your/forge-app \
+#     --config ./scripts/mint_fct_min_info.globalapp.yaml \
 #
-# WARNING: This file may contain tokens. Do not paste output into public
-# tickets, logs, or chat.
+# Can add --dry-run to see rendered variables without sending the request.
+#
+# WARNING: Output includes auth material (cookies/tokens).
 
 product: global
 
 # Atlassian GraphQL gateway for the target site.
 graphql_endpoint: "https://lhe2.atlassian.net/gateway/api/graphql"
 
+# Confirmed working mutation shape. This is also the default baked into the Rust
+# binary — the mutation: field here is optional but kept for visibility and easy editing.
+mutation: |
+  mutation SignForgeContextToken($input: GlobalAppSignForgeContextTokensInput!) {
+    globalApp_signForgeContextTokens(input: $input) {
+      success
+      errors {
+        message
+        __typename
+      }
+      tokens {
+        jwt
+        expiresAt
+        extensionId
+        __typename
+      }
+      __typename
+    }
+  }
+
 auth:
-  # globalApp_signForgeContextTokens requires SESSION auth — API tokens are rejected
-  # by forge_apps_bff with 403 IncorrectAuthException.
+  # Switch between auth types by changing 'type'. Only one block is active at a time.
+
+  # Option 1: Raw cookie (confirmed working — ~30 day lifetime)
   # Capture the Cookie header from a live browser session via Burp/DevTools.
   type: raw_cookie
   raw_cookie_file: "./session-cookie.txt"
+  # Format of session-cookie.txt:
+  #   tenant.session.token=eyJ...; atlassian.xsrf.token=5748ec3f...
 
-  # Option 2: API token — NOT supported for this mutation (forge_apps_bff rejects it)
-  # type: basic_api_token
-  # email: "lhe2@atlassian.com"
-  # api_token_file: "./api-token.txt"
+  # NOTE: API token — NOT supported for this mutation.
 
-# Global app IDs — required fields.
+# Required IDs — replace with values for your installation.
 global:
   cloud_id: "c9376ebe-9f83-43ad-921d-2d6ed561bde4"            # curl https://YOUR-SITE.atlassian.net/_edge/tenant_info
   installation_id: "4a5b78d5-ffac-429a-8e81-cc78536c32eb"     # forge install list --json → installationId (bare UUID)
   environment_id: "bc237ecd-0bbf-4923-9378-beec6192b5f3"      # forge environments list → environment UUID
+  # module_key — auto-detected from manifest.yml (first module key found); override here if needed
+  # module_key: "hello-jira-issue-panel"
 
-  # Pick one of the jira:* module keys from the manifest:
-  #   damn-vulnerable-jira-forge-app-hello-world-admin-page  (jira:adminPage)
-  #   damn-vulnerable-jira-forge-app-issue-glance            (jira:issueGlance)
-  #   damn-vulnerable-jira-forge-app-global-page             (jira:globalPage)
-  #   damn-vulnerable-jira-forge-app-issue-panel             (jira:issuePanel)
-  #   damn-vulnerable-jira-forge-app-issue-project           (jira:projectPage)
-  #   damn-vulnerable-jira-forge-app-issue-settings          (jira:projectSettingsPage)
-  #   damn-vulnerable-jira-forge-app-gadget                  (jira:dashboardGadget)
-  module_key: "hello-jira-issue-panel"
-
-# Override the default GraphQL variables with unlicensed: true to bypass
-# license checks during testing.
+# Confirmed minimum variables to mint a valid FCT.
 variables:
   input:
     contextIds:
