@@ -51,10 +51,15 @@ variables:
   input:
     contextIds:
       - "ari:cloud:jira::site/${config.global.cloud_id}"
-    unlicensed: true
+    unlicensed: false
     extensionContexts:
       - appVersion: "1.0.0"
         extensionId: "ari:cloud:ecosystem::extension/${manifest.app_id_bare}/${config.global.environment_id}/static/${manifest.module_key}"
         extensionType: "xen:issuePanel"
         installationId: "${config.global.installation_id}"
-        context: {}
+        context:
+          cloudId: "${config.global.cloud_id}"
+          environmentId: "${config.global.environment_id}"
+          extension:
+            type: "issuePanel"
+          type: "issuePanel"
