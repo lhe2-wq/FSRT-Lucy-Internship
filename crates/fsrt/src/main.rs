@@ -63,8 +63,7 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 // existing scan behaviour — so nothing breaks for current users.
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Mint a Forge Context Token (FCT) for a Confluence app.
-    /// Equivalent to running scripts/mint_fct_spike.py.
+    /// Mint a Forge Context Token (FCT).
     MintFct(mint_fct::MintFctArgs),
 
     /// Mint a Forge Invocation Token (FIT) for a Confluence app with a remote backend.

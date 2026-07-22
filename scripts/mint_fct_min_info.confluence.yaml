@@ -42,16 +42,16 @@ auth:
 
   # Option 1: Raw cookie (confirmed working — ~30 day lifetime)
   # Capture the Cookie header from a live browser session via Burp/DevTools.
-  # type: raw_cookie
-  # raw_cookie_file: "./session-cookie.txt"
+  type: raw_cookie
+  raw_cookie_file: "./session-cookie.txt"
   # Format of session-cookie.txt:
   #   tenant.session.token=eyJ...; atlassian.xsrf.token=5748ec3f...
 
   # Option 2: API token (confirmed working for Confluence)
   # Generate at: https://id.atlassian.com/manage-profile/security/api-tokens
-  type: basic_api_token
-  email: "lhe2@atlassian.com"
-  api_token_file: "./api-token.txt"  # paste your API token into this file
+  # type: basic_api_token
+  # email: "email-here@atlassian.com"
+  # api_token_file: "./api-token.txt"  # paste your API token into this file
 
 
 # Required IDs — replace with values for your installation.

@@ -66,13 +66,10 @@ pub fn run_mint_fct(args: &MintFctArgs) -> std::result::Result<(), Box<dyn std::
     let config: MintFctConfig = serde_yaml::from_str(&config_text)?;
 
     // --- 2. Load manifest.yml ---
-    // load_manifest() returns (raw_yaml_text, raw_json_value).
-    // We need the raw text to parse into ForgeManifest (which borrows from it),
-    // and the raw JSON value to walk private module fields.
-    let (manifest_text, raw_manifest) = load_manifest(&args.app_dir)?;
-
-    // Parse the typed ForgeManifest — gives us app.id and app.name.
-    // The lifetime `'_` means ForgeManifest borrows from manifest_text.
+    // load_manifest() reads the file exactly once and returns its raw text.
+    // We parse it a single time into a typed ForgeManifest (which borrows from
+    // manifest_text); all module details are read through typed accessors.
+    let manifest_text = load_manifest(&args.app_dir)?;
     let manifest: ForgeManifest<'_> = serde_yaml::from_str(&manifest_text)?;
 
     // --- 3. Extract manifest context ---
@@ -89,7 +86,7 @@ pub fn run_mint_fct(args: &MintFctArgs) -> std::result::Result<(), Box<dyn std::
             .and_then(|g| g.module_key.as_deref()),
     };
 
-    let manifest_ctx = extract_manifest_context(&manifest, &raw_manifest, config_module_key);
+    let manifest_ctx = extract_manifest_context(&manifest, config_module_key);
 
     // --- 4. Build auth headers ---
     let auth_headers = build_auth_headers(&config.auth)?;

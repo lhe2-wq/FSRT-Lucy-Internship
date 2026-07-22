@@ -496,6 +496,8 @@ where
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Remotes {
     #[serde(default)]
+    pub key: String,
+    #[serde(default)]
     pub auth: Value,
 }
 
@@ -969,6 +971,71 @@ impl<'a> ForgeModules<'a> {
                 admin,
             })
         })
+    }
+}
+
+impl<'a> ForgeModules<'a> {
+    // The module types the Forge Context Token minting flow can target, in
+    // preferred auto-detection order. Each tuple is
+    // (manifest module type string used in the FCT ARI, accessor returning the
+    // keys declared for that module type).
+    //
+    // Keeping this list here (rather than in the mint code) means module/remote
+    // knowledge lives entirely in forge_loader, and callers work off the typed
+    // manifest instead of re-walking raw YAML.
+    fn preferred_fct_modules(&self) -> [(&'static str, Vec<&'a str>); 6] {
+        [
+            (
+                "macro",
+                self.macros.iter().map(|m| m.common_keys.key).collect(),
+            ),
+            (
+                "globalPage",
+                self.confluence_global_page.iter().map(|m| m.key).collect(),
+            ),
+            (
+                "spacePage",
+                self.space_page.iter().map(|m| m.key).collect(),
+            ),
+            (
+                "globalPage",
+                self.jira_global_page.iter().map(|m| m.key).collect(),
+            ),
+            (
+                "issuePanel",
+                self.issue_panel.iter().map(|m| m.key).collect(),
+            ),
+            (
+                "globalPage",
+                self.project_page.iter().map(|m| m.key).collect(),
+            ),
+        ]
+    }
+
+    /// Auto-detect a module to mint a Forge Context Token for.
+    ///
+    /// Returns the first `(module_key, module_type)` found by scanning the
+    /// supported module types in preferred order, or `None` if the manifest
+    /// declares none of them.
+    pub fn detect_fct_module(&self) -> Option<(&'a str, &'static str)> {
+        for (module_type, keys) in self.preferred_fct_modules() {
+            if let Some(key) = keys.into_iter().next() {
+                return Some((key, module_type));
+            }
+        }
+        None
+    }
+
+    /// Look up the module type for a specific, caller-supplied module key.
+    ///
+    /// Returns `None` if no supported module declares that key.
+    pub fn fct_module_type_for_key(&self, key: &str) -> Option<&'static str> {
+        for (module_type, keys) in self.preferred_fct_modules() {
+            if keys.contains(&key) {
+                return Some(module_type);
+            }
+        }
+        None
     }
 }
 

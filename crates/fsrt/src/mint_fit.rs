@@ -91,10 +91,10 @@ pub fn run_mint_fit(args: &MintFitArgs) -> std::result::Result<(), Box<dyn std::
     let config: MintFctConfig = serde_yaml::from_str(&config_text)?;
 
     // --- 2. Load manifest.yml ---
-    // load_manifest() returns (raw_text, raw_json_value).
-    // raw_text is kept alive so ForgeManifest can borrow from it.
-    // raw_json is used to walk private fields (modules, remotes).
-    let (manifest_text, raw_manifest) = load_manifest(&args.app_dir)?;
+    // load_manifest() reads the file exactly once and returns its raw text,
+    // which is kept alive so ForgeManifest can borrow from it. We parse it a
+    // single time; module and remote details are read through typed accessors.
+    let manifest_text = load_manifest(&args.app_dir)?;
     let manifest: ForgeManifest<'_> = serde_yaml::from_str(&manifest_text)?;
 
     // --- 3. Extract manifest context ---
@@ -111,9 +111,9 @@ pub fn run_mint_fit(args: &MintFitArgs) -> std::result::Result<(), Box<dyn std::
             .and_then(|g| g.module_key.as_deref()),
     };
 
-    let manifest_ctx = extract_manifest_context(&manifest, &raw_manifest, config_module_key);
+    let manifest_ctx = extract_manifest_context(&manifest, config_module_key);
 
-    // detect_remote_key() walks raw_manifest["remotes"][0]["key"].
+    // detect_remote_key() reads the first remote's key from the typed manifest.
     // Returns None if no remotes are declared — we error clearly in that case.
     // An optional override in the config takes priority over auto-detection
     // (useful for apps with multiple remotes).
@@ -122,7 +122,7 @@ pub fn run_mint_fit(args: &MintFitArgs) -> std::result::Result<(), Box<dyn std::
         .as_ref()
         .and_then(|c| c.module_key.as_deref()); // reuse module_key field for now
 
-    let remote_key = detect_remote_key(&raw_manifest, remote_key_override)
+    let remote_key = detect_remote_key(&manifest, remote_key_override)
         .ok_or_else(|| MintError::Config(
             "No remotes declared in manifest.yml. \
              FIT minting requires a remote backend. \

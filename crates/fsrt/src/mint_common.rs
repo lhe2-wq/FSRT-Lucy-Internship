@@ -240,15 +240,13 @@ pub struct ManifestContext {
 // ============================================================================
 // extract_manifest_context()
 // ============================================================================
-// Reads a parsed ForgeManifest (for typed fields) and a raw JsonValue
-// (for private module fields) and returns a ManifestContext.
+// Reads a parsed ForgeManifest and returns a ManifestContext.
 //
-// Why parse twice? See the comment in mint_fct.rs — forge_loader's module
-// fields are private, so we walk the raw YAML tree instead of accessing
-// them through typed structs.
+// Module/remote detection lives in forge_loader (see ForgeModules methods), so
+// this works entirely off the typed manifest — the manifest is read from disk
+// once and parsed once by the caller.
 pub fn extract_manifest_context(
     manifest: &ForgeManifest<'_>,
-    raw_manifest: &JsonValue,
     module_key: Option<&str>,
 ) -> ManifestContext {
     let app_id = manifest.app.id.to_string();
@@ -262,7 +260,22 @@ pub fn extract_manifest_context(
         .to_string();
 
     let app_name = manifest.app.name.map(|s| s.to_string());
-    let (detected_key, detected_type) = detect_module(raw_manifest, module_key);
+
+    // Prefer a caller-supplied module key (inferring its type from the
+    // manifest), otherwise auto-detect a supported module.
+    let (detected_key, detected_type) = match module_key {
+        Some(key) => (
+            Some(key.to_string()),
+            manifest
+                .modules
+                .fct_module_type_for_key(key)
+                .map(|t| t.to_string()),
+        ),
+        None => match manifest.modules.detect_fct_module() {
+            Some((key, module_type)) => (Some(key.to_string()), Some(module_type.to_string())),
+            None => (None, None),
+        },
+    };
 
     ManifestContext {
         app_id,
@@ -271,74 +284,6 @@ pub fn extract_manifest_context(
         module_key: detected_key,
         module_type: detected_type,
     }
-}
-
-// Walks the raw YAML tree to find a module key and type.
-// Tries each module type in preferred order, matching the Python spike's
-// `preferred_types` list.
-fn detect_module(
-    raw_manifest: &JsonValue,
-    requested_key: Option<&str>,
-) -> (Option<String>, Option<String>) {
-    if let Some(key) = requested_key {
-        // Caller supplied a specific key — use it, infer type from manifest.
-        let module_type = find_type_for_key(raw_manifest, key);
-        return (Some(key.to_string()), module_type);
-    }
-
-    // Auto-detect from preferred module types in order.
-    // Each tuple is (YAML key in manifest, module type string for the FCT ARI).
-    let preferred: &[(&str, &str)] = &[
-        ("macro",                 "macro"),
-        ("confluence:globalPage", "globalPage"),
-        ("confluence:spacePage",  "spacePage"),
-        ("jira:globalPage",       "globalPage"),
-        ("jira:issuePanel",       "issuePanel"),
-        ("jira:projectPage",      "globalPage"),
-    ];
-
-    let modules = match raw_manifest.get("modules") {
-        Some(m) => m,
-        None => return (None, None),
-    };
-
-    for (yaml_key, module_type) in preferred {
-        if let Some(arr) = modules.get(yaml_key).and_then(|v| v.as_array()) {
-            if let Some(key) = arr
-                .first()
-                .and_then(|m| m.get("key"))
-                .and_then(|k| k.as_str())
-            {
-                return (Some(key.to_string()), Some(module_type.to_string()));
-            }
-        }
-    }
-
-    (None, None)
-}
-
-fn find_type_for_key(raw_manifest: &JsonValue, key: &str) -> Option<String> {
-    let type_map: &[(&str, &str)] = &[
-        ("macro",                 "macro"),
-        ("confluence:globalPage", "globalPage"),
-        ("confluence:spacePage",  "spacePage"),
-        ("jira:globalPage",       "globalPage"),
-        ("jira:issuePanel",       "issuePanel"),
-        ("jira:projectPage",      "globalPage"),
-    ];
-
-    let modules = raw_manifest.get("modules")?;
-
-    for (yaml_key, module_type) in type_map {
-        if let Some(arr) = modules.get(yaml_key).and_then(|v| v.as_array()) {
-            for module in arr {
-                if module.get("key").and_then(|k| k.as_str()) == Some(key) {
-                    return Some(module_type.to_string());
-                }
-            }
-        }
-    }
-    None
 }
 
 // ============================================================================
@@ -359,7 +304,7 @@ fn find_type_for_key(raw_manifest: &JsonValue, key: &str) -> Option<String> {
 // An optional `override_key` (from the config) takes priority over
 // auto-detection — needed for apps with multiple remotes.
 pub fn detect_remote_key(
-    raw_manifest: &JsonValue,
+    manifest: &ForgeManifest<'_>,
     override_key: Option<&str>,
 ) -> Option<String> {
     // Config override takes priority over auto-detection.
@@ -369,16 +314,15 @@ pub fn detect_remote_key(
         }
     }
 
-    // Walk raw_manifest["remotes"][0]["key"]
-    // Each step returns None if the key doesn't exist, and `?` propagates it.
-    let key = raw_manifest
-        .get("remotes")?           // the "remotes" array
-        .as_array()?               // treat it as a JSON array
-        .first()?                  // take the first remote entry
-        .get("key")?               // read its "key" field
-        .as_str()?;                // treat the value as a string
-
-    Some(key.to_string())
+    // Otherwise take the key of the first declared remote from the typed
+    // manifest. Returns None if no remotes are declared or the first one has
+    // no key.
+    manifest
+        .remotes
+        .as_ref()?
+        .first()
+        .map(|remote| remote.key.clone())
+        .filter(|key| !key.is_empty())
 }
 
 // ============================================================================
@@ -622,15 +566,15 @@ pub fn post_graphql(
 // ============================================================================
 // load_manifest()
 // ============================================================================
-// Shared manifest loading logic — reads the manifest.yml from an app directory,
-// returning both a typed ForgeManifest and a raw JsonValue.
-// The raw value is needed to walk private module/remote fields.
+// Shared manifest loading logic — reads the manifest.yml (or .yaml) from an app
+// directory exactly once and returns its raw text.
 //
-// Returns (manifest_text, typed_manifest, raw_manifest).
-// `manifest_text` must be kept alive because ForgeManifest borrows from it.
-pub fn load_manifest(
-    app_dir: &PathBuf,
-) -> Result<(String, JsonValue)> {
+// The returned String must be kept alive by the caller because the typed
+// `ForgeManifest` borrows from it. Callers parse it once via
+// `serde_yaml::from_str` — module/remote details are then read through the
+// typed accessors on `ForgeManifest`/`ForgeModules`, so the manifest is never
+// parsed a second time.
+pub fn load_manifest(app_dir: &PathBuf) -> Result<String> {
     let mut manifest_path = app_dir.join("manifest.yaml");
     if !manifest_path.exists() {
         manifest_path = app_dir.join("manifest.yml");
@@ -642,12 +586,7 @@ pub fn load_manifest(
         )));
     }
 
-    let text = fs::read_to_string(&manifest_path)?;
-
-    // Parse as raw JSON tree — used to walk private module and remote fields.
-    let raw: JsonValue = serde_yaml::from_str(&text)?;
-
-    Ok((text, raw))
+    Ok(fs::read_to_string(&manifest_path)?)
 }
 
 // ============================================================================
