@@ -20,16 +20,15 @@ use super::mint_common::{
     build_auth_headers,
     detect_remote_key,
     extract_manifest_context,
+    load_config,
     load_manifest,
     mint_fct_jwt,
     post_graphql,
     MintError,
-    MintFctConfig,
 };
 
 use forge_loader::manifest::ForgeManifest;
 use serde_json::Value as JsonValue;
-use std::fs;
 
 // ============================================================================
 // GraphQL mutation for FIT minting
@@ -70,7 +69,7 @@ pub struct MintFitArgs {
     #[arg(long, value_hint = clap::ValueHint::DirPath)]
     pub app_dir: std::path::PathBuf,
 
-    /// Path to the FCT/FIT config YAML file (see scripts/mint_fct_min_info.confluence.yaml)
+    /// Path to the FCT/FIT config TOML file (see fsrt-remote.toml at repo root)
     #[arg(long, value_hint = clap::ValueHint::FilePath)]
     pub config: std::path::PathBuf,
 
@@ -85,10 +84,10 @@ pub struct MintFitArgs {
 // Top-level entry point for `fsrt mint-fit`.
 // Called from main.rs after clap parses the CLI arguments.
 pub fn run_mint_fit(args: &MintFitArgs) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    // --- 1. Load and parse the YAML config file ---
-    // The same YAML format as mint-fct — same auth, same confluence IDs.
-    let config_text = fs::read_to_string(&args.config)?;
-    let config: MintFctConfig = serde_yaml::from_str(&config_text)?;
+    // --- 1. Load and parse the TOML config file ---
+    // The same config format as mint-fct — same auth, same confluence IDs.
+    // load_config() uses the `config` crate to read fsrt-remote.toml.
+    let config = load_config(&args.config)?;
 
     // --- 2. Load manifest.yml ---
     // load_manifest() reads the file exactly once and returns its raw text,

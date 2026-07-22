@@ -1,0 +1,76 @@
+# fsrt-remote.toml — Forge remote token minting config (FCT / FIT).
+#
+# ONE config file for all products. Flip `product` between "confluence" and
+# "global" to switch which token type is minted — the matching [confluence] or
+# [global] section below is used, the other is ignored.
+#
+# A pen tester fills this out once per target app, then runs:
+#   fsrt mint-fct --app-dir /path/to/forge-app --config ./fsrt-remote.toml --dry-run
+#   fsrt mint-fit --app-dir /path/to/forge-app --config ./fsrt-remote.toml
+#
+# Remove --dry-run once the rendered variables look correct.
+#
+# Loaded by the `config` crate (config-rs) and deserialised into MintFctConfig.
+# The GraphQL variables shape is baked into the fsrt binary — you only supply
+# the IDs and auth below.
+#
+# WARNING: Output includes auth material (cookies/tokens). Do not paste into
+# public tickets, logs, Slack, or chat.
+
+# ==============================================================================
+# Product selector — "confluence" or "global" (Jira, Compass, Rovo).
+# This decides which mutation is sent and which [section] below is read.
+# ==============================================================================
+product = "confluence"
+
+# Atlassian GraphQL gateway for the target site.
+graphql_endpoint = "https://lhe2.atlassian.net/gateway/api/graphql"
+
+# ==============================================================================
+# Auth
+# ==============================================================================
+# Switch methods by changing `type`. Secrets are read from local files (paths
+# below); change those files, not this config, so the config stays shareable.
+#
+# NOTE: for product = "global", only raw_cookie works — globalApp_signForgeContextTokens
+# requires SESSION auth and forge_apps_bff rejects API tokens with 403.
+[auth]
+# Option 1: Raw cookie (confirmed working for both products — ~30 day lifetime).
+# Capture the Cookie header from a live browser session via Burp/DevTools.
+type = "raw_cookie"
+raw_cookie_file = "./session-cookie.txt"
+#   Format of session-cookie.txt:
+#   tenant.session.token=eyJ...; atlassian.xsrf.token=5748ec3f...
+
+# Option 2: API token (confirmed working for Confluence only).
+# Generate at: https://id.atlassian.com/manage-profile/security/api-tokens
+# type = "basic_api_token"
+# email = "email-here@atlassian.com"
+# api_token_file = "./api-token.txt"   # paste your API token into this file
+
+# Option 3: Bearer token (Forge CLI OAuth token — untested).
+# type = "bearer_token"
+# bearer_token_file = "./bearer-token.txt"   # token from ~/.forge/credentials
+
+# ==============================================================================
+# IDs — fill in the section matching `product` above. The other is ignored.
+# Replace with the values for your installation.
+# ==============================================================================
+
+# Used when product = "confluence"
+[confluence]
+cloud_id       = "c9376ebe-9f83-43ad-921d-2d6ed561bde4"  # curl https://YOUR-SITE.atlassian.net/_edge/tenant_info
+installation_id = "2690fda2-67ef-454b-b479-009b3f6ab5fe" # forge install list --json → installationId (bare UUID)
+environment_id = "96b19e70-50b3-4b31-8e6e-b023414a9795"  # forge environments list → environment UUID
+# module_key — auto-detected from manifest.yml (first module key found).
+# Uncomment to override if the app has multiple modules.
+# module_key = "hello-world-macro"
+
+# Used when product = "global" (Jira, Compass, Rovo)
+[global]
+cloud_id       = "c9376ebe-9f83-43ad-921d-2d6ed561bde4"  # curl https://YOUR-SITE.atlassian.net/_edge/tenant_info
+installation_id = "4a5b78d5-ffac-429a-8e81-cc78536c32eb" # forge install list --json → installationId (bare UUID)
+environment_id = "bc237ecd-0bbf-4923-9378-beec6192b5f3"  # forge environments list → environment UUID
+# module_key — auto-detected from manifest.yml (first module key found).
+# Uncomment to override if the app has multiple modules.
+# module_key = "hello-jira-issue-panel"

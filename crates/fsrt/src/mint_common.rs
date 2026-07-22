@@ -88,6 +88,9 @@ pub enum MintError {
     #[error("YAML parse error: {0}")]
     Yaml(#[from] serde_yaml::Error),
 
+    #[error("config error: {0}")]
+    ConfigCrate(#[from] config::ConfigError),
+
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 
@@ -561,6 +564,45 @@ pub fn post_graphql(
         }
         Err(e) => Err(MintError::Http(e.to_string())),
     }
+}
+
+// ============================================================================
+// load_config()
+// ============================================================================
+// Loads and deserialises the `fsrt-remote.toml` config file into a
+// `MintFctConfig` using the `config` crate (config-rs).
+//
+// The `config` crate is a layered configuration system: sources are added in
+// priority order and merged, then the merged result is deserialised into a
+// typed struct via serde. Right now we use a single source — the TOML file —
+// but the builder pattern makes it trivial to add more layers later (e.g. an
+// `Environment` source so secrets like the session cookie can be supplied via
+// env vars instead of on disk):
+//
+//     Config::builder()
+//         .add_source(File::from(path))                       // fsrt-remote.toml
+//         .add_source(Environment::with_prefix("FSRT")        // FSRT_AUTH__RAW_COOKIE=...
+//             .separator("__"))
+//         .build()?
+//
+// `File::from(&Path)` auto-detects the format from the file extension, so a
+// `.toml` file is parsed as TOML. `try_deserialize()` then pours the merged
+// values into `MintFctConfig` — the exact same struct serde_yaml used to fill,
+// so all the `#[serde(...)]` attributes and downstream code are unchanged.
+pub fn load_config(config_path: &std::path::Path) -> Result<MintFctConfig> {
+    if !config_path.exists() {
+        return Err(MintError::Config(format!(
+            "Config file not found: {}",
+            config_path.display()
+        )));
+    }
+
+    let settings = config::Config::builder()
+        .add_source(config::File::from(config_path))
+        .build()?;
+
+    let cfg: MintFctConfig = settings.try_deserialize()?;
+    Ok(cfg)
 }
 
 // ============================================================================

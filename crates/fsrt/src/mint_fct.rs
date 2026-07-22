@@ -14,10 +14,10 @@
 // `super::` means "the parent module" — in Rust's module tree, mint_fct and
 // mint_common are siblings under the same crate root (main.rs).
 use super::mint_common::{
-    MintFctConfig,
     Product,
     build_auth_headers,
     extract_manifest_context,
+    load_config,
     load_manifest,
     mint_fct_jwt,
     DEFAULT_CONFLUENCE_MUTATION,
@@ -25,7 +25,6 @@ use super::mint_common::{
 };
 
 use forge_loader::manifest::ForgeManifest;
-use std::fs;
 
 // ============================================================================
 // CLI arguments
@@ -43,7 +42,7 @@ pub struct MintFctArgs {
     #[arg(long, value_hint = clap::ValueHint::DirPath)]
     pub app_dir: std::path::PathBuf,
 
-    /// Path to the FCT config YAML file (see scripts/mint_fct_min_info.confluence.yaml)
+    /// Path to the FCT config TOML file (see fsrt-remote.toml at repo root)
     #[arg(long, value_hint = clap::ValueHint::FilePath)]
     pub config: std::path::PathBuf,
 
@@ -59,11 +58,12 @@ pub struct MintFctArgs {
 // Called from main.rs after clap parses the CLI arguments.
 //
 // Returns `Box<dyn std::error::Error>` so it can propagate both MintError
-// and any other errors (e.g. serde_yaml parse errors) back to main().
+// and any other errors (e.g. config parse errors) back to main().
 pub fn run_mint_fct(args: &MintFctArgs) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    // --- 1. Load and parse the YAML config file ---
-    let config_text = fs::read_to_string(&args.config)?;
-    let config: MintFctConfig = serde_yaml::from_str(&config_text)?;
+    // --- 1. Load and parse the TOML config file ---
+    // load_config() uses the `config` crate to read fsrt-remote.toml and
+    // deserialise it into MintFctConfig.
+    let config = load_config(&args.config)?;
 
     // --- 2. Load manifest.yml ---
     // load_manifest() reads the file exactly once and returns its raw text.
