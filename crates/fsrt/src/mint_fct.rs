@@ -20,6 +20,7 @@ use super::mint_common::{
     load_config,
     load_manifest,
     mint_fct_jwt,
+    resolve_environment,
     DEFAULT_CONFLUENCE_MUTATION,
     DEFAULT_GLOBAL_APP_MUTATION,
 };
@@ -86,10 +87,16 @@ pub fn run_mint_fct(args: &MintFctArgs) -> std::result::Result<(), Box<dyn std::
             .and_then(|g| g.module_key.as_deref()),
     };
 
-    let manifest_ctx = extract_manifest_context(&manifest, config_module_key);
+    let mut manifest_ctx = extract_manifest_context(&manifest, config_module_key);
 
     // --- 4. Build auth headers ---
     let auth_headers = build_auth_headers(&config.auth)?;
+
+    // --- 4b. Resolve environment_id + app_version ---
+    // If the config didn't provide environment_id, look it up from the Forge
+    // platform (using environment_key, default "development"). This is a
+    // read-only query and populates manifest_ctx for build_variables().
+    resolve_environment(&config, &mut manifest_ctx, &auth_headers)?;
 
     // --- 5. Print diagnostic info ---
     println!("\n=== Product ===");

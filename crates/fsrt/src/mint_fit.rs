@@ -24,6 +24,7 @@ use super::mint_common::{
     load_manifest,
     mint_fct_jwt,
     post_graphql,
+    resolve_environment,
     MintError,
 };
 
@@ -110,7 +111,7 @@ pub fn run_mint_fit(args: &MintFitArgs) -> std::result::Result<(), Box<dyn std::
             .and_then(|g| g.module_key.as_deref()),
     };
 
-    let manifest_ctx = extract_manifest_context(&manifest, config_module_key);
+    let mut manifest_ctx = extract_manifest_context(&manifest, config_module_key);
 
     // detect_remote_key() reads the first remote's key from the typed manifest.
     // Returns None if no remotes are declared — we error clearly in that case.
@@ -143,6 +144,12 @@ pub fn run_mint_fit(args: &MintFitArgs) -> std::result::Result<(), Box<dyn std::
     // Same auth headers for both the FCT and FIT requests —
     // both go to the same Atlassian gateway with the same credentials.
     let auth_headers = build_auth_headers(&config.auth)?;
+
+    // --- 5b. Resolve environment_id + app_version ---
+    // If the config didn't provide environment_id, look it up from the Forge
+    // platform (using environment_key, default "development"). Read-only query;
+    // populates manifest_ctx so the FCT step's build_variables() has real values.
+    resolve_environment(&config, &mut manifest_ctx, &auth_headers)?;
 
     // --- 6. Dry-run exit ---
     if args.dry_run {

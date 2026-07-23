@@ -210,10 +210,17 @@ pub struct ConfluenceConfig {
     pub local_id: Option<String>,
     pub module_key: Option<String>,
     pub site_url: Option<String>,
+    // Named Forge environment slot; used to look up environment_id when it
+    // isn't supplied explicitly. Defaults to "development".
+    pub environment_key: Option<String>,
 }
 
 // The `global:` section of the config — used when product: global.
 // Mirrors the fields needed to build a GlobalAppSignForgeContextTokensInput.
+//
+// `environment_id` is optional: if omitted, it is resolved automatically from
+// the Forge platform via `fetch_app_environment()` (see below), using the app
+// id (from the manifest) and `environment_key` (defaults to "development").
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct GlobalAppConfig {
     pub cloud_id: Option<String>,
@@ -221,6 +228,9 @@ pub struct GlobalAppConfig {
     pub environment_id: Option<String>,
     pub environment_type: Option<String>,
     pub module_key: Option<String>,
+    // Named Forge environment slot ("development" | "staging" | "production").
+    // Used to look up environment_id when it isn't supplied explicitly.
+    pub environment_key: Option<String>,
 }
 
 // ============================================================================
@@ -238,6 +248,13 @@ pub struct ManifestContext {
     pub app_name: Option<String>,
     pub module_key: Option<String>,
     pub module_type: Option<String>,
+    // Resolved from the Forge platform via fetch_app_environment().
+    // environment_id: the UUID of the named environment slot.
+    // app_version: the latest deployed version string (e.g. "43.0.0").
+    // Both are None until the lookup runs; the default variable templates
+    // reference them as ${manifest.environment_id} and ${manifest.app_version}.
+    pub environment_id: Option<String>,
+    pub app_version: Option<String>,
 }
 
 // ============================================================================
@@ -286,6 +303,9 @@ pub fn extract_manifest_context(
         app_name,
         module_key: detected_key,
         module_type: detected_type,
+        // Filled in later by resolve_environment() if a lookup runs.
+        environment_id: None,
+        app_version: None,
     }
 }
 
@@ -606,6 +626,178 @@ pub fn load_config(config_path: &std::path::Path) -> Result<MintFctConfig> {
 }
 
 // ============================================================================
+// fetch_app_environment() / resolve_environment()
+// ============================================================================
+// Resolves the app's environment_id (and latest deployed version) from the
+// Forge platform, so the pen tester doesn't have to paste a UUID or a version
+// string into the config.
+//
+// The query is app-scoped: given the app id (already read from manifest.yml)
+// and a named environment slot ("development" / "staging" / "production"), the
+// platform returns the environment UUID and the latest deployed version.
+//
+//   app(id: $appId) {
+//     environmentByKey(key: $envKey) { id }
+//     ...latest version...
+//   }
+
+// Default named environment slot when the config doesn't specify one.
+// The Forge platform's default development environment has the key "default"
+// (its `type` is DEVELOPMENT). Override via `environment_key` in the config.
+pub const DEFAULT_ENVIRONMENT_KEY: &str = "default";
+
+// The read query that resolves environment_id + latest app version.
+pub const APP_ENVIRONMENT_QUERY: &str = r#"query GetAppEnvironment($appId: ID!, $envKey: String!) {
+  app(id: $appId) {
+    id
+    name
+    environmentByKey(key: $envKey) {
+      id
+      key
+      type
+      versions {
+        nodes { version isLatest }
+      }
+    }
+  }
+}"#;
+pub const APP_ENVIRONMENT_OPERATION_NAME: &str = "GetAppEnvironment";
+
+// Result of the environment lookup.
+#[derive(Debug, Clone)]
+pub struct AppEnvironment {
+    pub environment_id: String,
+    // Latest deployed version, if the app has any deployed versions.
+    pub app_version: Option<String>,
+}
+
+// Performs the GraphQL query and parses out the environment id + version.
+// Reuses the shared post_graphql() helper — same endpoint, same auth headers.
+pub fn fetch_app_environment(
+    endpoint: &str,
+    auth_headers: &HashMap<String, String>,
+    app_id: &str,
+    env_key: &str,
+) -> Result<AppEnvironment> {
+    let variables = serde_json::json!({
+        "appId": app_id,
+        "envKey": env_key,
+    });
+
+    let (status, body) = post_graphql(
+        endpoint,
+        APP_ENVIRONMENT_OPERATION_NAME,
+        auth_headers,
+        APP_ENVIRONMENT_QUERY,
+        &variables,
+    )?;
+
+    let parsed: JsonValue = serde_json::from_str(&body).map_err(MintError::Json)?;
+
+    let env = parsed
+        .get("data")
+        .and_then(|d| d.get("app"))
+        .and_then(|a| a.get("environmentByKey"));
+
+    let environment_id = env
+        .and_then(|e| e.get("id"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            MintError::Config(format!(
+                "Could not resolve environment '{}' for app {} (HTTP {}). \
+                 Check the environment key, or set environment_id explicitly in the config.\n\
+                 Response body: {}",
+                env_key, app_id, status, body
+            ))
+        })?
+        .to_string();
+
+    // Version is best-effort — an app may have no deployed versions yet.
+    // Pick the node flagged isLatest, falling back to the first node.
+    let app_version = env
+        .and_then(|e| e.get("versions"))
+        .and_then(|v| v.get("nodes"))
+        .and_then(|n| n.as_array())
+        .and_then(|nodes| {
+            nodes
+                .iter()
+                .find(|node| {
+                    node.get("isLatest")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false)
+                })
+                .or_else(|| nodes.first())
+        })
+        .and_then(|node| node.get("version"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    Ok(AppEnvironment {
+        environment_id,
+        app_version,
+    })
+}
+
+// High-level, opt-in resolver used by both subcommands.
+//
+// If the config already supplies `environment_id`, we trust it and skip the
+// network round-trip (the config value acts as an override/cache). Otherwise we
+// call fetch_app_environment() using the config's `environment_key` (defaulting
+// to "development") and populate manifest_ctx.environment_id + app_version so
+// build_variables() can reference them.
+pub fn resolve_environment(
+    config: &MintFctConfig,
+    manifest_ctx: &mut ManifestContext,
+    auth_headers: &HashMap<String, String>,
+) -> Result<()> {
+    // Read the config's explicit environment_id / environment_key for the
+    // active product, if any.
+    let (explicit_id, env_key) = match config.product {
+        Product::Confluence => {
+            let c = config.confluence.as_ref();
+            (
+                c.and_then(|c| c.environment_id.clone()),
+                c.and_then(|c| c.environment_key.clone()),
+            )
+        }
+        Product::Global => {
+            let g = config.global.as_ref();
+            (
+                g.and_then(|g| g.environment_id.clone()),
+                g.and_then(|g| g.environment_key.clone()),
+            )
+        }
+    };
+
+    // Explicit environment_id in the config short-circuits the lookup.
+    if let Some(id) = explicit_id {
+        manifest_ctx.environment_id = Some(id);
+        return Ok(());
+    }
+
+    let env_key = env_key.unwrap_or_else(|| DEFAULT_ENVIRONMENT_KEY.to_string());
+
+    println!(
+        "\n=== Resolving environment '{}' via Forge platform ===",
+        env_key
+    );
+    let app_env = fetch_app_environment(
+        &config.graphql_endpoint,
+        auth_headers,
+        &manifest_ctx.app_id,
+        &env_key,
+    )?;
+
+    println!("  environment_id: {}", app_env.environment_id);
+    println!("  app_version:    {:?}", app_env.app_version);
+
+    manifest_ctx.environment_id = Some(app_env.environment_id);
+    manifest_ctx.app_version = app_env.app_version;
+
+    Ok(())
+}
+
+// ============================================================================
 // load_manifest()
 // ============================================================================
 // Shared manifest loading logic — reads the manifest.yml (or .yaml) from an app
@@ -652,11 +844,15 @@ pub fn build_variables(
 
     let context = serde_json::json!({
         "manifest": {
-            "app_id":      manifest_ctx.app_id,
-            "app_id_bare": manifest_ctx.app_id_bare,
-            "app_name":    manifest_ctx.app_name,
-            "module_key":  manifest_ctx.module_key,
-            "module_type": manifest_ctx.module_type,
+            "app_id":         manifest_ctx.app_id,
+            "app_id_bare":    manifest_ctx.app_id_bare,
+            "app_name":       manifest_ctx.app_name,
+            "module_key":     manifest_ctx.module_key,
+            "module_type":    manifest_ctx.module_type,
+            // Resolved via resolve_environment() — used by the default templates
+            // so the pen tester never has to supply these.
+            "environment_id": manifest_ctx.environment_id,
+            "app_version":    manifest_ctx.app_version,
         },
         "config": config_value,
     });
@@ -667,18 +863,21 @@ pub fn build_variables(
         vars.clone()
     } else {
         match config.product {
+            // NOTE: environment_id and app_version come from the resolved
+            // manifest context (${manifest.environment_id} / ${manifest.app_version}),
+            // not from the config — so the pen tester never supplies them.
             Product::Confluence => serde_json::json!({
                 "cloudId": "${config.confluence.cloud_id}",
                 "input": {
                     "contextIds": ["ari:cloud:confluence::site/${config.confluence.cloud_id}"],
                     "extensionSpecificContexts": {
-                        "appVersion": "1.0.0",
-                        "extensionId": "ari:cloud:ecosystem::extension/${manifest.app_id_bare}/${config.confluence.environment_id}/static/${manifest.module_key}",
+                        "appVersion": "${manifest.app_version}",
+                        "extensionId": "ari:cloud:ecosystem::extension/${manifest.app_id_bare}/${manifest.environment_id}/static/${manifest.module_key}",
                         "extensionType": "xen:macro",
                         "installationId": "${config.confluence.installation_id}",
                         "context": {
                             "type": "${manifest.module_type}",
-                            "environmentId": "${config.confluence.environment_id}",
+                            "environmentId": "${manifest.environment_id}",
                             "extension": { "type": "${manifest.module_type}" }
                         }
                     }
@@ -686,13 +885,19 @@ pub fn build_variables(
             }),
             Product::Global => serde_json::json!({
                 "input": {
-                    "contextIds": ["ari:cloud:ecosystem::site/${config.global.cloud_id}"],
+                    "contextIds": ["ari:cloud:jira::site/${config.global.cloud_id}"],
+                    "unlicensed": false,
                     "extensionContexts": [{
-                        "appVersion": "1.0.0",
-                        "extensionId": "ari:cloud:ecosystem::extension/${manifest.app_id_bare}/${config.global.environment_id}/static/${manifest.module_key}",
-                        "extensionType": "xen:globalPage",
+                        "appVersion": "${manifest.app_version}",
+                        "extensionId": "ari:cloud:ecosystem::extension/${manifest.app_id_bare}/${manifest.environment_id}/static/${manifest.module_key}",
+                        "extensionType": "xen:${manifest.module_type}",
                         "installationId": "${config.global.installation_id}",
-                        "context": {}
+                        "context": {
+                            "cloudId": "${config.global.cloud_id}",
+                            "environmentId": "${manifest.environment_id}",
+                            "type": "${manifest.module_type}",
+                            "extension": { "type": "${manifest.module_type}" }
+                        }
                     }]
                 }
             }),
