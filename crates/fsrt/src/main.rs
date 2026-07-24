@@ -4,6 +4,8 @@ mod forge_project;
 mod mint_common;
 mod mint_fct;
 mod mint_fit;
+#[cfg(feature = "mint_cookie")]
+mod mint_session_cookie;
 #[cfg(test)]
 mod test;
 
@@ -69,6 +71,11 @@ pub enum Command {
     /// Mint a Forge Invocation Token (FIT) for a Confluence app with a remote backend.
     /// Internally mints an FCT first, then uses it to mint the FIT in one command.
     MintFit(mint_fit::MintFitArgs),
+
+    /// Harvest an Atlassian session cookie via a real browser and write it to
+    /// the configured `auth.raw_cookie_file`. Requires `--features mint_cookie`.
+    #[cfg(feature = "mint_cookie")]
+    MintCookie(mint_session_cookie::MintCookieArgs),
 }
 
 #[derive(Parser, Debug)]
@@ -867,6 +874,11 @@ fn main() -> Result<()> {
 
     if let Some(Command::MintFit(mint_fit_args)) = &args.command {
         return mint_fit::run_mint_fit(mint_fit_args);
+    }
+
+    #[cfg(feature = "mint_cookie")]
+    if let Some(Command::MintCookie(mint_cookie_args)) = &args.command {
+        return mint_session_cookie::run_mint_cookie(mint_cookie_args);
     }
 
     let dirs = std::mem::take(&mut args.dirs);
