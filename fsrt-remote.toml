@@ -42,7 +42,7 @@ graphql_endpoint = "https://testerlhe2-1.atlassian.net/gateway/api/graphql"
 type = "raw_cookie"
 raw_cookie_file = "./session-cookie.txt"
 #   Format of session-cookie.txt:
-#   tenant.session.token=eyJ...; atlassian.xsrf.token=5748ec3f...
+#   tenant.session.token=eyJ...
 
 # Option 2: API token (confirmed working for Confluence only).
 # Generate at: https://id.atlassian.com/manage-profile/security/api-tokens
@@ -51,16 +51,15 @@ raw_cookie_file = "./session-cookie.txt"
 # api_token_file = "./api-token.txt"   # paste your API token into this file
 
 # ==============================================================================
-# Harvest — settings for the native session-cookie harvester (mint_cookie feat.)
+# cookie — settings for the native session-cookie harvester (mint-cookie)
 # ==============================================================================
 # Only used by the WebDriver-based harvester that (re)mints the raw cookie into
 # `auth.raw_cookie_file`. The tenant site is derived from graphql_endpoint above;
 # the password is NEVER stored here — it's read from the ATL_PASSWORD env var (or
-# prompted). Requires a build with `--features mint_cookie`.
-[harvest]
-username = "testerlhe2-1@protonmail.com"   # dummy Atlassian account email
+# prompted).
+[cookie]
+username = "testerlhe2-1@protonmail.com"   # Atlassian account email
 # verify_wait_secs = 120   # pause after login to enter an email code (default 120)
-# timeout_secs = 30        # per-step element wait (default 30)
 # headed = true            # show the browser window (needed to solve a bot-check)
 
 # ==============================================================================

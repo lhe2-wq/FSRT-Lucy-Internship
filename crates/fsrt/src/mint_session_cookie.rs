@@ -24,7 +24,6 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use rand::Rng;
 use serde_json::json;
 use thirtyfour::ChromeCapabilities;
 use thirtyfour::prelude::*;
@@ -36,7 +35,7 @@ use crate::mint_common::{MintError, MintFctConfig, Result};
 const COOKIE_NAME: &str = "tenant.session.token";
 const LOGIN_URL: &str = "https://id.atlassian.com/login";
 
-// Fallbacks used only when the corresponding optional `[harvest]` field is
+// Fallbacks used only when the corresponding optional `[cookie]` field is
 // omitted from the config. There is intentionally NO Default for HarvestConfig
 // itself — it must always be constructed from fsrt-remote.toml.
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
@@ -50,7 +49,7 @@ const DEFAULT_VERIFY_WAIT_SECS: u64 = 120;
 /// env var / prompt so it never lives in the config file).
 #[derive(Debug, Clone)]
 pub struct HarvestConfig {
-    /// Atlassian account email to log in as (from `[harvest].username`).
+    /// Atlassian account email to log in as (from `[cookie].username`).
     pub username: String,
     /// Account password. Sourced from an env var / prompt by the caller, never
     /// from the config, to keep it out of shell history and shared files.
@@ -60,12 +59,12 @@ pub struct HarvestConfig {
     pub site_url: String,
     /// Where to write the cookie file — from `auth.raw_cookie_file`.
     pub output: PathBuf,
-    /// Run Chrome with a visible window (from `[harvest].headed`).
+    /// Run Chrome with a visible window (from `[cookie].headed`).
     pub headed: bool,
-    /// Per-step element wait timeout (from `[harvest].timeout_secs`).
+    /// Per-step element wait timeout (fixed internal default).
     pub timeout: Duration,
     /// How long to pause after login for a manual email-verification code
-    /// (from `[harvest].verify_wait_secs`).
+    /// (from `[cookie].verify_wait_secs`).
     pub verify_wait: Duration,
 }
 
@@ -73,14 +72,14 @@ impl HarvestConfig {
     /// Build a [`HarvestConfig`] entirely from the loaded `fsrt-remote.toml`
     /// (`MintFctConfig`) plus the password (sourced separately).
     ///
-    /// - `username`, `headed`, timeouts come from `[harvest]`.
+    /// - `username`, `headed`, verify-wait come from `[cookie]`.
     /// - `site_url` is derived from `graphql_endpoint` (scheme + host).
     /// - `output` comes from `auth.raw_cookie_file` (the file the token loader
     ///   later reads), so mint-and-consume agree on one path.
     pub fn from_remote_config(config: &MintFctConfig, password: String) -> Result<Self> {
-        let harvest = config.harvest.as_ref().ok_or_else(|| {
+        let cookie = config.cookie.as_ref().ok_or_else(|| {
             MintError::Config(
-                "session-cookie harvesting requires a `[harvest]` section in the \
+                "session-cookie harvesting requires a `[cookie]` section in the \
                  config (at minimum `username`)."
                     .into(),
             )
@@ -105,14 +104,15 @@ impl HarvestConfig {
             })?;
 
         Ok(Self {
-            username: harvest.username.clone(),
+            username: cookie.username.clone(),
             password,
             site_url,
             output,
-            headed: harvest.headed.unwrap_or(false),
-            timeout: Duration::from_secs(harvest.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS)),
+            headed: cookie.headed.unwrap_or(false),
+            // Fixed internal per-step wait; not user-configurable.
+            timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
             verify_wait: Duration::from_secs(
-                harvest.verify_wait_secs.unwrap_or(DEFAULT_VERIFY_WAIT_SECS),
+                cookie.verify_wait_secs.unwrap_or(DEFAULT_VERIFY_WAIT_SECS),
             ),
         })
     }
@@ -154,14 +154,14 @@ pub fn harvest_session_cookie(config: &HarvestConfig) -> Result<String> {
 #[derive(Debug, clap::Args)]
 pub struct MintCookieArgs {
     /// Path to the config TOML file (see fsrt-remote.toml at repo root). The
-    /// `[harvest]` section and `graphql_endpoint`/`auth.raw_cookie_file` are read
+    /// `[cookie]` section and `graphql_endpoint`/`auth.raw_cookie_file` are read
     /// from here — nothing is hardcoded.
     #[arg(long, value_hint = clap::ValueHint::FilePath)]
     pub config: std::path::PathBuf,
 
     /// Show the browser window. Needed the first time / whenever Atlassian asks
     /// for an email verification code or a bot-check, since you must interact
-    /// with the page. Overrides `[harvest].headed`.
+    /// with the page. Overrides `[cookie].headed`.
     #[arg(long, default_value_t = false)]
     pub headed: bool,
 }
@@ -358,9 +358,7 @@ async fn do_login(driver: &WebDriver, config: &HarvestConfig) -> Result<()> {
                     .to_string(),
             )
         })?;
-    human_pause(400, 900).await;
     type_into(&email, &config.username).await?;
-    human_pause(500, 1200).await;
     click_continue(driver, config.timeout).await?;
 
     // Step 2: password (revealed after the email step).
@@ -373,9 +371,7 @@ async fn do_login(driver: &WebDriver, config: &HarvestConfig) -> Result<()> {
                     .to_string(),
             )
         })?;
-    human_pause(600, 1300).await;
     type_into(&pw, &config.password).await?;
-    human_pause(500, 1200).await;
     click_continue(driver, config.timeout).await?;
 
     Ok(())
@@ -505,27 +501,16 @@ async fn query_clickable(
         .map_err(|e| wd_err(&format!("wait for {css}"), e))
 }
 
-/// Focus, clear, then type char-by-char with small random delays. React inputs
-/// can ignore a bulk send_keys without a focus click, and instant typing looks
-/// robotic to risk detection — so we pace each keystroke.
+/// Focus, clear, then type the value. React inputs can ignore send_keys without
+/// a focus click first, so we click before typing.
 async fn type_into(field: &WebElement, text: &str) -> Result<()> {
     field.click().await.map_err(|e| wd_err("focus field", e))?;
-    human_pause(200, 500).await;
     field.clear().await.map_err(|e| wd_err("clear field", e))?;
-    for ch in text.chars() {
-        field
-            .send_keys(ch.to_string())
-            .await
-            .map_err(|e| wd_err("type char", e))?;
-        let ms = rand::thread_rng().gen_range(50..=150);
-        tokio::time::sleep(Duration::from_millis(ms)).await;
-    }
+    field
+        .send_keys(text)
+        .await
+        .map_err(|e| wd_err("type text", e))?;
     Ok(())
-}
-
-async fn human_pause(lo_ms: u64, hi_ms: u64) {
-    let ms = rand::thread_rng().gen_range(lo_ms..=hi_ms);
-    tokio::time::sleep(Duration::from_millis(ms)).await;
 }
 
 /// Write the cookie in the exact format the Rust `raw_cookie` loader expects:

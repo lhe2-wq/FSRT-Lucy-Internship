@@ -13,7 +13,7 @@ graphql_schema = []
 # Native Rust session-cookie harvester (ports poc/mint_session_cookie_spike.py).
 # Off by default so normal builds stay lean and don't pull in tokio + a full
 # async HTTP/WebDriver stack. Enable with `--features mint_cookie`.
-mint_cookie = ["dep:thirtyfour", "dep:tokio", "dep:rand"]
+mint_cookie = ["dep:thirtyfour", "dep:tokio"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -42,8 +42,6 @@ base64 = "0.22"
 
 # --- optional deps for the `mint_cookie` feature (native WebDriver harvester) ---
 # thirtyfour is an async Selenium/WebDriver client; tokio provides the runtime we
-# bridge into from the otherwise-sync binary via a local `block_on`. rand adds the
-# human-like typing/pacing jitter the Python spike uses to avoid bot-checks.
+# bridge into from the otherwise-sync binary via a local `block_on`.
 thirtyfour = { version = "0.37", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"], optional = true }
-rand = { version = "0.8", optional = true }

@@ -169,26 +169,23 @@ pub struct MintFctConfig {
     // `${...}` placeholders that get substituted at runtime.
     pub variables: Option<JsonValue>,
 
-    // Optional `[harvest]` section — settings for the native session-cookie
+    // Optional `[cookie]` section — settings for the native session-cookie
     // harvester (see `mint_session_cookie.rs`, `mint_cookie` feature). Only the
     // harvester reads this; token minting ignores it.
-    pub harvest: Option<HarvestSettings>,
+    pub cookie: Option<CookieSettings>,
 }
 
-// The `[harvest]` section of the config — inputs for the WebDriver-based
+// The `[cookie]` section of the config — inputs for the WebDriver-based
 // session-cookie harvester. Kept separate from auth/IDs because it's only used
 // when (re)minting the raw cookie, not when sending GraphQL requests.
 #[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct HarvestSettings {
+pub struct CookieSettings {
     // Atlassian account email to log in as.
     pub username: String,
 
     // How long (seconds) to pause after login for a manual email-verification
     // code. Optional — defaults applied by the harvester if omitted.
     pub verify_wait_secs: Option<u64>,
-
-    // Per-step element wait timeout (seconds). Optional.
-    pub timeout_secs: Option<u64>,
 
     // Run Chrome with a visible window (needed to solve a bot-check / enter a
     // verification code). Optional; defaults to headless.
