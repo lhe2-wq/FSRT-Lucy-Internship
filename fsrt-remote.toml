@@ -25,7 +25,8 @@
 product = "confluence"
 
 # Atlassian GraphQL gateway for the target site.
-graphql_endpoint = "https://lhe2.atlassian.net/gateway/api/graphql"
+#graphql_endpoint = "https://lhe2.atlassian.net/gateway/api/graphql"
+graphql_endpoint = "https://testerlhe2-1.atlassian.net/gateway/api/graphql"
 
 # ==============================================================================
 # Auth
@@ -61,14 +62,14 @@ raw_cookie_file = "./session-cookie.txt"
 
 # Used when product = "confluence"
 [confluence]
-cloud_id       = "c9376ebe-9f83-43ad-921d-2d6ed561bde4"  # curl https://YOUR-SITE.atlassian.net/_edge/tenant_info
-installation_id = "2690fda2-67ef-454b-b479-009b3f6ab5fe" # forge install list --json → installationId (bare UUID)
+cloud_id       = "0c509a2e-5329-4a74-9011-7524108035ba"  # curl https://YOUR-SITE.atlassian.net/_edge/tenant_info
+installation_id = "7aa4dbcd-bf10-471a-839c-f2db12ffb570" # forge install list --json → installationId (bare UUID)
 # environment_key = "default"
 # module_key = "hello-world-macro"
 
 # Used when product = "global" (Jira, Compass, Rovo)
 [global]
-cloud_id       = "c9376ebe-9f83-43ad-921d-2d6ed561bde4"  # curl https://YOUR-SITE.atlassian.net/_edge/tenant_info
-installation_id = "4a5b78d5-ffac-429a-8e81-cc78536c32eb" # forge install list --json → installationId (bare UUID)
+cloud_id       = "0c509a2e-5329-4a74-9011-7524108035ba"  # curl https://YOUR-SITE.atlassian.net/_edge/tenant_info
+installation_id = "xx" # forge install list --json → installationId (bare UUID)
 # environment_key = "default"
 # module_key = "hello-jira-issue-panel"
