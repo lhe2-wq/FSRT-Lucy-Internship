@@ -238,13 +238,20 @@ async fn run_flow(driver: &WebDriver, config: &HarvestConfig) -> Result<String> 
     do_login(driver, config).await?;
     println!("[*] Login submitted.");
 
-    // Pause here so you can complete any email-verification code by hand. This is
-    // unconditional (like the Python spike): pressing ENTER is the universal
-    // "I'm ready, proceed" signal — it works whether or not a verification step
-    // appeared. It also auto-resumes on a timeout, or early if the session cookie
-    // shows up on its own. Trying to auto-detect "login succeeded" is unreliable
-    // because the redirect is near-instantaneous.
-    wait_for_manual_step(driver, config).await;
+    // Clicking "Continue" only *submits* the password — the post-login redirect
+    // chain (id.atlassian.com -> account session established -> tenant reachable)
+    // is still in flight. In a headed run the manual pause below absorbs that
+    // time; headless has no pause, so we explicitly wait for the browser to leave
+    // the login page before touching the tenant. Without this, harvest races
+    // ahead and the tenant bounces us to home.atlassian.com before the session
+    // is ready.
+    wait_for_login_to_settle(driver, config).await;
+
+    // In a headed run, also pause so the user can finish anything interactive in
+    // the browser (e.g. type an email-verification code).
+    if config.headed {
+        wait_for_manual_step(driver, config).await;
+    }
 
     println!("[*] Visiting tenant {} to mint the session cookie ...", config.site_url);
     harvest_cookie(driver, config).await
@@ -393,6 +400,51 @@ async fn click_continue(driver: &WebDriver, timeout: Duration) -> Result<()> {
 
 // ── Cookie harvesting ────────────────────────────────────────────────────────
 
+/// Wait for the post-login redirect to finish, i.e. for the browser to leave the
+/// `id.atlassian.com` login page. This gives the account session time to be
+/// established before we try to reach the tenant. Best-effort with a bounded
+/// wait — if it doesn't move on in time, we proceed anyway and let the
+/// harvest-loop's retries handle it.
+async fn wait_for_login_to_settle(driver: &WebDriver, config: &HarvestConfig) {
+    let deadline = std::time::Instant::now() + config.timeout;
+    while std::time::Instant::now() < deadline {
+        match driver.current_url().await {
+            Ok(url) if !url.as_str().contains("id.atlassian.com") => {
+                // Left the login/auth host — the redirect chain has progressed.
+                return;
+            }
+            _ => {}
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+/// Poll `get_named_cookie` in place (no navigation) until the cookie appears or
+/// the timeout elapses. Returns the cookie value if found.
+async fn poll_for_cookie(driver: &WebDriver, timeout: Duration) -> Option<String> {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        if let Ok(cookie) = driver.get_named_cookie(COOKIE_NAME).await
+            && !cookie.value.is_empty()
+        {
+            return Some(cookie.value);
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    None
+}
+
+/// Extract the bare host (e.g. `site.atlassian.net`) from a site URL for a
+/// "are we still on the tenant?" check.
+fn tenant_host(site_url: &str) -> &str {
+    site_url
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .split('/')
+        .next()
+        .unwrap_or(site_url)
+}
+
 async fn harvest_cookie(driver: &WebDriver, config: &HarvestConfig) -> Result<String> {
     // First, try the page login already left us on (a completed login usually
     // redirects straight to the tenant).
@@ -403,28 +455,55 @@ async fn harvest_cookie(driver: &WebDriver, config: &HarvestConfig) -> Result<St
     }
 
     // Visit the tenant ONCE (where `tenant.session.token` is scoped), then poll
-    // for the cookie in place — no rapid cycling through multiple URLs. The
-    // cookie is only visible via get_named_cookie when we're on the tenant host,
-    // so we load that single page and give it time to settle.
+    // for the cookie IN PLACE. We deliberately do NOT re-`goto` every tick:
+    // `goto` interrupts/restarts any in-flight redirect, which would repeatedly
+    // kill the very handshake that mints the cookie before it can finish. Since
+    // `wait_for_login_to_settle` already ran, the account session exists, so this
+    // single load should stick on the tenant and complete.
     let tenant = format!("{}/", config.site_url.trim_end_matches('/'));
     driver
         .goto(&tenant)
         .await
         .map_err(|e| wd_err(&format!("navigate to tenant {tenant}"), e))?;
 
-    // Poll in place: re-read the cookie every second until it appears or we hit
-    // the timeout. We do NOT re-navigate — just let the page finish settling.
-    let deadline = std::time::Instant::now() + config.timeout;
-    while std::time::Instant::now() < deadline {
-        if let Ok(cookie) = driver.get_named_cookie(COOKIE_NAME).await
-            && !cookie.value.is_empty()
-        {
-            return Ok(cookie.value);
-        }
-        tokio::time::sleep(Duration::from_secs(1)).await;
+    if let Some(value) = poll_for_cookie(driver, config.timeout).await {
+        return Ok(value);
     }
 
-    // Help the user debug what *did* get set and where we ended up.
+    // Conditional single retry: if after settling we got bounced OFF the tenant
+    // host (e.g. to home.atlassian.com because the session still wasn't ready on
+    // the first visit), navigate to the tenant one more time and poll again. This
+    // is a deliberate, one-shot retry — not a blind reload loop.
+    let on_tenant = driver
+        .current_url()
+        .await
+        .map(|u| u.as_str().contains(tenant_host(&config.site_url)))
+        .unwrap_or(false);
+    if !on_tenant {
+        let _ = driver.goto(&tenant).await;
+        if let Some(value) = poll_for_cookie(driver, config.timeout).await {
+            return Ok(value);
+        }
+    }
+
+    // The cookie never appeared. In a headless run there's no window for the user
+    // to intervene (e.g. complete an email-verification code, dismiss a consent
+    // screen, or finish product setup), and these interactive steps are the most
+    // common reason harvesting fails. Rather than rely on brittle screen
+    // detection, point the user at --headed so they can see and handle whatever
+    // the browser is showing.
+    if !config.headed {
+        return Err(MintError::Http(
+            "could not obtain the session cookie in headless mode. This usually \
+             means an interactive step is blocking login (email-verification code, \
+             a consent screen, or product setup). Re-run with the `--headed` flag \
+             so a browser window opens and you can complete it."
+                .to_string(),
+        ));
+    }
+
+    // Headed run: the user could see the browser, so give the detailed diagnostic
+    // (what cookies were set and where we ended up) to help debug config issues.
     let last_url = driver
         .current_url()
         .await
