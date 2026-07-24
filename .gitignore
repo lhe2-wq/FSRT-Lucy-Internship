@@ -1,3 +1,6 @@
 /target
 session-cookie.txt
 api-token.txt
+chrome-profile/
+__pycache__/
+*.pyc
