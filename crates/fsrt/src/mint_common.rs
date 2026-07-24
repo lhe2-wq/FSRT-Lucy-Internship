@@ -11,7 +11,10 @@
 // Imports
 // ============================================================================
 
-use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+use base64::{
+    Engine as _,
+    engine::general_purpose::{STANDARD as B64, URL_SAFE_NO_PAD as B64_URL},
+};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -405,6 +408,14 @@ pub fn build_auth_headers(auth: &AuthConfig) -> Result<HashMap<String, String>> 
 
             // Only print the first 80 chars — never log a full session token.
             println!("Cookie (first 80 chars): {}...", &raw[..raw.len().min(80)]);
+
+            // Warn if the session token has expired. The token is a JWT whose
+            // `exp` claim we can read locally (no network call). For now this is
+            // informational only — we still send the cookie and let the server
+            // reject it if it's stale — but a loud warning up front makes the
+            // failure obvious instead of a confusing HTTP 401 later.
+            check_cookie_expiry(&raw);
+
             headers.insert("Cookie".to_string(), raw.trim().to_string());
         }
 
@@ -455,6 +466,107 @@ pub fn build_auth_headers(auth: &AuthConfig) -> Result<HashMap<String, String>> 
     }
 
     Ok(headers)
+}
+
+// ============================================================================
+// Session-cookie expiry checking
+// ============================================================================
+// The raw cookie contains `tenant.session.token`, which is a JWT. Its `exp`
+// claim tells us exactly when the session dies — we can read it locally without
+// any network round-trip. These helpers extract that claim and print a status
+// message so an expired cookie is caught up front (rather than surfacing as an
+// opaque HTTP 401 mid-request).
+
+const SESSION_COOKIE_NAME: &str = "tenant.session.token";
+
+// Pull the `tenant.session.token` value out of a full Cookie header string.
+// The header looks like "name1=val1; tenant.session.token=eyJ...; name2=val2".
+// Falls back to treating the whole trimmed string as the token if no explicit
+// `name=` prefix is present (i.e. the file contains only the bare JWT).
+fn extract_session_token(raw_cookie: &str) -> Option<&str> {
+    for pair in raw_cookie.split(';') {
+        let pair = pair.trim();
+        if let Some(value) = pair.strip_prefix(&format!("{SESSION_COOKIE_NAME}=")) {
+            return Some(value);
+        }
+    }
+    // No "name=" pair matched. If the whole thing looks like a bare JWT
+    // (three dot-separated segments and no '='), use it directly.
+    let trimmed = raw_cookie.trim();
+    if !trimmed.contains('=') && trimmed.split('.').count() == 3 {
+        return Some(trimmed);
+    }
+    None
+}
+
+// Decode a JWT's `exp` (expiry) claim, in Unix seconds. Returns None if the
+// token isn't a well-formed JWT or has no numeric `exp`.
+fn decode_jwt_exp(token: &str) -> Option<i64> {
+    // JWT = header.payload.signature — the middle segment is the JSON payload.
+    let payload_b64 = token.split('.').nth(1)?;
+    let payload_bytes = B64_URL.decode(payload_b64).ok()?;
+    let payload: JsonValue = serde_json::from_slice(&payload_bytes).ok()?;
+    payload.get("exp")?.as_i64()
+}
+
+// Format a duration in seconds as a short human string, e.g. "2h 5m", "3d 4h".
+fn format_duration(seconds: i64) -> String {
+    let seconds = seconds.abs();
+    let days = seconds / 86_400;
+    let hours = (seconds % 86_400) / 3_600;
+    let minutes = (seconds % 3_600) / 60;
+    if days > 0 {
+        format!("{days}d {hours}h")
+    } else if hours > 0 {
+        format!("{hours}h {minutes}m")
+    } else if minutes > 0 {
+        format!("{minutes}m")
+    } else {
+        format!("{seconds}s")
+    }
+}
+
+// Inspect the raw cookie's session token and print its expiry status. Returns
+// true if the token is present and not yet expired, false otherwise. Purely
+// informational for now — it does not block the request.
+pub fn check_cookie_expiry(raw_cookie: &str) -> bool {
+    let Some(token) = extract_session_token(raw_cookie) else {
+        println!(
+            "WARNING: could not find '{SESSION_COOKIE_NAME}' in the cookie — \
+             cannot check expiry."
+        );
+        return false;
+    };
+
+    let Some(exp) = decode_jwt_exp(token) else {
+        println!(
+            "WARNING: could not read an `exp` claim from '{SESSION_COOKIE_NAME}' \
+             (not a JWT?) — cannot check expiry."
+        );
+        return false;
+    };
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    if exp <= now {
+        println!(
+            "WARNING: session cookie EXPIRED {} ago (exp={}). \
+             Renew it (e.g. re-run the session-cookie harvester) before minting.",
+            format_duration(now - exp),
+            exp,
+        );
+        false
+    } else {
+        println!(
+            "Session cookie valid — expires in {} (exp={}).",
+            format_duration(exp - now),
+            exp,
+        );
+        true
+    }
 }
 
 // ============================================================================
