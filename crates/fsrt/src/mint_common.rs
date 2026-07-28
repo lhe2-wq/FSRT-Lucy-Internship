@@ -108,6 +108,12 @@ pub enum MintError {
     // invocation that came back unsuccessful.
     #[error("invocation failed: {0}")]
     InvocationFailed(String),
+
+    // Returned when the configured session cookie's JWT `exp` is in the past.
+    // We fail fast here instead of sending a stale cookie and getting a
+    // confusing HTTP 401 downstream. The message tells the tester how to renew.
+    #[error("{0}")]
+    CookieExpired(String),
 }
 
 // Convenience alias — write `Result<T>` instead of `Result<T, MintError>`.
@@ -517,11 +523,20 @@ pub fn build_auth_headers(auth: &AuthConfig) -> Result<HashMap<String, String>> 
             // Only print the first 80 chars — never log a full session token.
             println!("Cookie (first 80 chars): {}...", &raw[..raw.len().min(80)]);
 
-            // Warn if the session token has expired. The token is a JWT whose
-            // `exp` claim we can read locally (no network call). For now this is
-            // informational only — we still send the cookie and let the server
-            // reject it if it's stale — but a loud warning up front makes the
-            // failure obvious instead of a confusing HTTP 401 later.
+            // Check the session token's `exp` claim locally (no network call).
+            // If we can definitively tell it is expired, hard-fail here with
+            // actionable advice — sending a stale cookie only yields a confusing
+            // HTTP 401 later. If we cannot read an `exp` (non-standard cookie
+            // format), we do NOT block: check_cookie_expiry() prints a warning
+            // and we proceed, letting the server be the final authority.
+            if let Some(secs_ago) = cookie_expired_secs_ago(&raw) {
+                return Err(MintError::CookieExpired(format!(
+                    "Session cookie EXPIRED {} ago. Renew it by running:\n    \
+                     fsrt mint-cookie --config <your-config.toml> --headed\n\
+                     (writes a fresh cookie to auth.raw_cookie_file), then retry.",
+                    format_duration(secs_ago),
+                )));
+            }
             check_cookie_expiry(&raw);
 
             headers.insert("Cookie".to_string(), raw.trim().to_string());
@@ -634,9 +649,25 @@ fn format_duration(seconds: i64) -> String {
     }
 }
 
+// Definitive expiry check used to hard-fail before sending a stale cookie.
+// Returns Some(seconds_since_expiry) ONLY when the session token is present,
+// is a readable JWT, and its `exp` is in the past. Returns None when the
+// cookie is still valid OR when we cannot read an `exp` (non-standard format) —
+// i.e. "don't block unless we are sure it is expired".
+fn cookie_expired_secs_ago(raw_cookie: &str) -> Option<i64> {
+    let token = extract_session_token(raw_cookie)?;
+    let exp = decode_jwt_exp(token)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    (exp <= now).then_some(now - exp)
+}
+
 // Inspect the raw cookie's session token and print its expiry status. Returns
 // true if the token is present and not yet expired, false otherwise. Purely
-// informational for now — it does not block the request.
+// informational — it does not block the request (the hard block lives in
+// build_auth_headers via cookie_expired_secs_ago).
 pub fn check_cookie_expiry(raw_cookie: &str) -> bool {
     let Some(token) = extract_session_token(raw_cookie) else {
         println!(

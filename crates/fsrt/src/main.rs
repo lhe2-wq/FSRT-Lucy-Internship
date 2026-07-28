@@ -863,6 +863,16 @@ pub(crate) fn scan_directory<'a>(
     Ok(reporter.into_report())
 }
 
+// Print a subcommand error via Display (real newlines, no Debug wrapper) and
+// exit non-zero. On success, returns Ok(()) so main can propagate it normally.
+fn exit_on_err(result: Result<()>) -> Result<()> {
+    if let Err(err) = result {
+        eprintln!("Error: {err}");
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let mut args = Args::parse();
     tracing_subscriber::registry()
@@ -874,21 +884,25 @@ fn main() -> Result<()> {
     // If the user ran `fsrt mint-fct ...`, route to run_mint_fct() and exit.
     // If no subcommand was given, fall through to the existing scan behaviour —
     // so `fsrt /path/to/app` keeps working exactly as before.
+    // Route to a subcommand if one was given. On error, print the message via
+    // Display (honours real newlines) and exit non-zero — rather than returning
+    // the error to main, which would Debug-print it (escaping `\n` and wrapping
+    // it in the error variant name, e.g. CookieExpired("...\n...")).
     if let Some(Command::MintFct(mint_fct_args)) = &args.command {
-        return mint_fct::run_mint_fct(mint_fct_args);
+        return exit_on_err(mint_fct::run_mint_fct(mint_fct_args));
     }
 
     if let Some(Command::MintFit(mint_fit_args)) = &args.command {
-        return mint_fit::run_mint_fit(mint_fit_args);
+        return exit_on_err(mint_fit::run_mint_fit(mint_fit_args));
     }
 
     if let Some(Command::InvokeExtension(invoke_args)) = &args.command {
-        return invoke_extension::run_invoke_extension(invoke_args);
+        return exit_on_err(invoke_extension::run_invoke_extension(invoke_args));
     }
 
     #[cfg(feature = "mint_cookie")]
     if let Some(Command::MintCookie(mint_cookie_args)) = &args.command {
-        return mint_session_cookie::run_mint_cookie(mint_cookie_args);
+        return exit_on_err(mint_session_cookie::run_mint_cookie(mint_cookie_args));
     }
 
     let dirs = std::mem::take(&mut args.dirs);
