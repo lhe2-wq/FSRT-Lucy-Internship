@@ -154,17 +154,22 @@ pub fn harvest_session_cookie(config: &HarvestConfig) -> Result<String> {
 /// Args for the `mint-cookie` subcommand.
 #[derive(Debug, clap::Args)]
 pub struct MintCookieArgs {
-    /// Path to the config TOML file (see fsrt-remote.toml at repo root). The
-    /// `[cookie]` section and `graphql_endpoint`/`auth.raw_cookie_file` are read
-    /// from here — nothing is hardcoded.
-    /// Defaults to ./fsrt-remote.toml in the current working directory.
-    #[arg(long, value_hint = clap::ValueHint::FilePath, default_value = "./fsrt-remote.toml")]
+    #[arg(
+        long,
+        value_hint = clap::ValueHint::FilePath,
+        default_value = "./fsrt-remote.toml",
+        help = "OPTIONAL: config TOML path (reads [cookie], graphql_endpoint,\n\
+                auth.raw_cookie_file)."
+    )]
     pub config: std::path::PathBuf,
 
-    /// Show the browser window. Needed the first time / whenever Atlassian asks
-    /// for an email verification code or a bot-check, since you must interact
-    /// with the page. Overrides `[cookie].headed`.
-    #[arg(long, default_value_t = false)]
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "OPTIONAL: show the browser window\n\
+                (needed for email verification / bot-check; overrides [cookie].headed).\n\
+                Default: false."
+    )]
     pub headed: bool,
 }
 

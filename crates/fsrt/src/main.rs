@@ -69,8 +69,8 @@ pub enum Command {
     /// Mint a Forge Context Token (FCT).
     MintFct(mint_fct::MintFctArgs),
 
-    /// Mint a Forge Invocation Token (FIT) for a Confluence app with a remote backend.
-    /// Internally mints an FCT first, then uses it to mint the FIT in one command.
+    /// Mint a Forge Invocation Token (FIT).
+    /// Internally mints an FCT first, then uses it for the FIT.
     MintFit(mint_fit::MintFitArgs),
 
     /// Invoke a backend function via the `invokeExtension` mutation.

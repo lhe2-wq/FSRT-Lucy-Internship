@@ -104,50 +104,67 @@ const INVOKE_OPERATION_NAME: &str = "InvokeExtension";
 // overrides called out in EAS-4566.
 #[derive(Debug, clap::Args)]
 pub struct InvokeExtensionArgs {
-    /// Forge app directory containing manifest.yml.
-    /// Defaults to the current working directory.
-    #[arg(long, value_hint = clap::ValueHint::DirPath, default_value = ".")]
+    #[arg(
+        long,
+        value_hint = clap::ValueHint::DirPath,
+        default_value = ".",
+        help = "OPTIONAL: Forge app dir containing manifest.yml."
+    )]
     pub app_dir: std::path::PathBuf,
 
-    /// Path to the FCT/FIT config TOML file (see fsrt-remote.toml at repo root).
-    /// Defaults to ./fsrt-remote.toml in the current working directory.
-    #[arg(long, value_hint = clap::ValueHint::FilePath, default_value = "./fsrt-remote.toml")]
+    #[arg(
+        long,
+        value_hint = clap::ValueHint::FilePath,
+        default_value = "./fsrt-remote.toml",
+        help = "OPTIONAL: config TOML path."
+    )]
     pub config: std::path::PathBuf,
 
-    /// Function to invoke: the @forge/resolver `resolver.define` name (accepts
-    /// "<resolver>.<function>" or "<function>"). Dispatched via
-    /// `payload.call.functionKey`. Required.
-    #[arg(long, required = true)]
+    #[arg(
+        long,
+        required = true,
+        help = "REQUIRED: resolver function to invoke (the @forge/resolver\n\
+                `resolver.define` name; accepts \"<resolver>.<fn>\" or \"<fn>\").\n\
+                Sent as payload.call.functionKey."
+    )]
     pub function: String,
 
-    /// The invocation payload as a JSON string. Delivered to the resolver
-    /// callback as its `payload` argument (via `payload.call.payload`). This is
-    /// the tester-controlled attack surface (fuzzing / injection / IDOR).
-    /// Required — pass '{}' for an empty payload.
-    #[arg(long, required = true)]
+    #[arg(
+        long,
+        required = true,
+        help = "REQUIRED: invocation payload as a JSON string.\n\
+                Delivered to the resolver as its `payload` arg (the attack surface).\n\
+                Use '{}' for an empty payload."
+    )]
     pub payload: String,
 
-    /// Override the full `payload.context` object as a JSON string — e.g. copied
-    /// verbatim from a captured `useInvokeExtensionRelayMutation` request. This
-    /// is the authorization-boundary knob (who am I / what am I acting on).
-    /// Optional: if omitted, a context object is derived from config + manifest data.
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "OPTIONAL: override payload.context as JSON (e.g. a captured request).\n\
+                Default: derived from config + manifest."
+    )]
     pub context: Option<String>,
 
-    /// Provide an FCT JWT directly instead of minting one (maps to the auth header).
-    /// Useful for replaying a captured token or testing a token minted for a
-    /// different user/module to probe the enforcement boundary.
-    /// Optional: if omitted, an FCT is minted automatically.
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "OPTIONAL: use this FCT JWT instead of minting one\n\
+                (replay a captured token / probe the auth boundary).\n\
+                Default: mint an FCT automatically."
+    )]
     pub fct: Option<String>,
 
-    /// Invoke the function asynchronously if the platform supports it
-    /// (maps to InvokeExtensionInput.async).
-    #[arg(long = "async", default_value_t = false)]
+    #[arg(
+        long = "async",
+        default_value_t = false,
+        help = "OPTIONAL: invoke asynchronously if supported.\nDefault: false."
+    )]
     pub invoke_async: bool,
 
-    /// Print request details but do not call GraphQL
-    #[arg(long, default_value_t = false)]
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "OPTIONAL: print the request but do not call GraphQL.\nDefault: false."
+    )]
     pub dry_run: bool,
 }
 
