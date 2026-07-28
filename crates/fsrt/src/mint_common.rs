@@ -101,6 +101,13 @@ pub enum MintError {
     // reports a logical failure (e.g. bad cloud_id, bad installation_id).
     #[error("FCT minting failed: {0}")]
     FctFailed(String),
+
+    // Returned when invokeExtension is accepted by the gateway (HTTP 200) but
+    // the backend reports the invocation itself failed (success=false / errors).
+    // This is distinct from FctFailed: auth + FCT minting succeeded; it was the
+    // invocation that came back unsuccessful.
+    #[error("invocation failed: {0}")]
+    InvocationFailed(String),
 }
 
 // Convenience alias — write `Result<T>` instead of `Result<T, MintError>`.
@@ -290,10 +297,57 @@ pub struct ManifestContext {
 // Module/remote detection lives in forge_loader (see ForgeModules methods), so
 // this works entirely off the typed manifest — the manifest is read from disk
 // once and parsed once by the caller.
+// Resolve the module that owns a `--function` value, tolerating both the bare
+// "<function>" form and the "<resolver>.<function>" form. Tries the whole
+// string first, then the segment after the last '.'.
+fn detect_module_for_function<'a>(
+    manifest: &ForgeManifest<'a>,
+    function: &str,
+) -> Option<(&'a str, &'static str)> {
+    manifest
+        .modules
+        .detect_fct_module_for_function(function)
+        .or_else(|| {
+            function
+                .rsplit_once('.')
+                .and_then(|(_, tail)| manifest.modules.detect_fct_module_for_function(tail))
+        })
+}
+
 pub fn extract_manifest_context(
     manifest: &ForgeManifest<'_>,
     module_key: Option<&str>,
 ) -> ManifestContext {
+    // No invoked function is known in the mint-only paths, so module selection
+    // uses first-module auto-detection (historical behaviour). With no
+    // function supplied, the function-aware error path cannot trigger, so the
+    // Result is always Ok here.
+    extract_manifest_context_for_function(manifest, module_key, None)
+        .expect("extract_manifest_context_for_function cannot fail without a function")
+}
+
+/// Like [`extract_manifest_context`], but aware of the backend resolver
+/// `function` being invoked.
+///
+/// Module selection precedence:
+///   1. An explicit `module_key` (from config) always wins. If it does not own
+///      the invoked `function`, a warning is emitted — the mismatch is usually a
+///      config mistake and would otherwise fail confusingly at the remote hop.
+///   2. Otherwise, if a `function` is supplied, select the module whose
+///      `resolver.function` matches it. This is the correct choice for apps
+///      where several modules share one resolver, or where the first-declared
+///      module is endpoint-backed (so blind first-module detection picks a
+///      `moduleKey` that does not match the invoked resolver). If no module
+///      declares that function, this is a hard error — we do NOT fall back to
+///      an unrelated module, because sending a mismatched `moduleKey` fails
+///      confusingly at the remote hop (e.g. a 404 text/html from the backend).
+///   3. Otherwise (no function supplied), fall back to first-module
+///      auto-detection.
+pub fn extract_manifest_context_for_function(
+    manifest: &ForgeManifest<'_>,
+    module_key: Option<&str>,
+    function: Option<&str>,
+) -> Result<ManifestContext> {
     let app_id = manifest.app.id.to_string();
 
     // Strip the ARI prefix to get the bare UUID.
@@ -306,23 +360,55 @@ pub fn extract_manifest_context(
 
     let app_name = manifest.app.name.map(|s| s.to_string());
 
-    // Prefer a caller-supplied module key (inferring its type from the
-    // manifest), otherwise auto-detect a supported module.
     let (detected_key, detected_type) = match module_key {
-        Some(key) => (
-            Some(key.to_string()),
-            manifest
-                .modules
-                .fct_module_type_for_key(key)
-                .map(|t| t.to_string()),
-        ),
-        None => match manifest.modules.detect_fct_module() {
-            Some((key, module_type)) => (Some(key.to_string()), Some(module_type.to_string())),
-            None => (None, None),
+        // 1. Explicit override from config — inferring its type from the
+        //    manifest. Warn if it doesn't own the invoked function.
+        Some(key) => {
+            if let Some(func) = function {
+                let owns_func = detect_module_for_function(manifest, func)
+                    .is_some_and(|(matched_key, _)| matched_key == key);
+                if !owns_func {
+                    eprintln!(
+                        "warning: configured module_key '{key}' does not declare \
+                         resolver function '{func}'; the invocation's moduleKey may \
+                         not match the invoked resolver."
+                    );
+                }
+            }
+            (
+                Some(key.to_string()),
+                manifest
+                    .modules
+                    .fct_module_type_for_key(key)
+                    .map(|t| t.to_string()),
+            )
+        }
+        // 2. Select the module that owns the invoked function. No fallback: a
+        //    mismatched moduleKey fails confusingly downstream, so error out.
+        None => match function {
+            Some(func) => match detect_module_for_function(manifest, func) {
+                Some((key, module_type)) => {
+                    (Some(key.to_string()), Some(module_type.to_string()))
+                }
+                None => {
+                    return Err(MintError::Config(format!(
+                        "no module in the manifest declares resolver function '{func}'. \
+                         Check the --function value, or set module_key in the config to \
+                         the module that owns this resolver."
+                    )));
+                }
+            },
+            // 3. No function supplied — first-module auto-detection.
+            None => match manifest.modules.detect_fct_module() {
+                Some((key, module_type)) => {
+                    (Some(key.to_string()), Some(module_type.to_string()))
+                }
+                None => (None, None),
+            },
         },
     };
 
-    ManifestContext {
+    Ok(ManifestContext {
         app_id,
         app_id_bare,
         app_name,
@@ -331,7 +417,7 @@ pub fn extract_manifest_context(
         // Filled in later by resolve_environment() if a lookup runs.
         environment_id: None,
         app_version: None,
-    }
+    })
 }
 
 // ============================================================================
@@ -1010,6 +1096,12 @@ pub fn build_variables(
                         "extensionType": "xen:macro",
                         "installationId": "${config.confluence.installation_id}",
                         "context": {
+                            // moduleKey is what the platform bakes into the signed
+                            // FCT and later surfaces as the resolver's
+                            // `context.moduleKey`. Resolvers that branch on it
+                            // (e.g. moduleKey.includes('node')) throw
+                            // "Cannot read properties of undefined" without it.
+                            "moduleKey": "${manifest.module_key}",
                             "type": "${manifest.module_type}",
                             "environmentId": "${manifest.environment_id}",
                             "extension": { "type": "${manifest.module_type}" }
@@ -1027,6 +1119,10 @@ pub fn build_variables(
                         "extensionType": "xen:${manifest.module_type}",
                         "installationId": "${config.global.installation_id}",
                         "context": {
+                            // See the Confluence note above: moduleKey must be in
+                            // the signed FCT so the resolver's context.moduleKey
+                            // is populated.
+                            "moduleKey": "${manifest.module_key}",
                             "cloudId": "${config.global.cloud_id}",
                             "environmentId": "${manifest.environment_id}",
                             "type": "${manifest.module_type}",
@@ -1066,6 +1162,19 @@ pub fn mint_fct_jwt(
     manifest_ctx: &ManifestContext,
     auth_headers: &HashMap<String, String>,
 ) -> Result<String> {
+    // Verbose by default — mint-fct / mint-fit want the full GraphQL trace.
+    mint_fct_jwt_opts(config, manifest_ctx, auth_headers, false)
+}
+
+// Same as `mint_fct_jwt`, but `quiet` suppresses the FCT GraphQL
+// variables/response diagnostics. `invoke-extension` uses quiet=true so its
+// output stays focused on the invocation, not the intermediate token mint.
+pub fn mint_fct_jwt_opts(
+    config: &MintFctConfig,
+    manifest_ctx: &ManifestContext,
+    auth_headers: &HashMap<String, String>,
+    quiet: bool,
+) -> Result<String> {
     // Select mutation and operation name based on product.
     let (default_mutation, operation_name, response_key) = match config.product {
         Product::Confluence => (
@@ -1084,12 +1193,14 @@ pub fn mint_fct_jwt(
 
     let variables = build_variables(config, manifest_ctx)?;
 
-    println!("\n=== FCT GraphQL variables ===");
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&variables)
-            .unwrap_or_else(|_| "<serialisation error>".to_string())
-    );
+    if !quiet {
+        println!("\n=== FCT GraphQL variables ===");
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&variables)
+                .unwrap_or_else(|_| "<serialisation error>".to_string())
+        );
+    }
 
     let (status, body) = post_graphql(
         &config.graphql_endpoint,
@@ -1099,15 +1210,16 @@ pub fn mint_fct_jwt(
         &variables,
     )?;
 
-    println!("\n=== FCT GraphQL response ===");
-    println!("HTTP status: {}", status);
-
-    // Parse and pretty-print the response.
+    // Parse and (unless quiet) pretty-print the response.
     let parsed: JsonValue = serde_json::from_str(&body).map_err(|e| {
         println!("{}", body); // print raw body if not valid JSON
         MintError::Json(e)
     })?;
-    println!("{}", serde_json::to_string_pretty(&parsed)?);
+    if !quiet {
+        println!("\n=== FCT GraphQL response ===");
+        println!("HTTP status: {}", status);
+        println!("{}", serde_json::to_string_pretty(&parsed)?);
+    }
 
     // Navigate to the FCT JWT in the response tree using the product-specific key.
     // Confluence: data.confluence_generateForgeContextToken.forgeContextToken.jwt

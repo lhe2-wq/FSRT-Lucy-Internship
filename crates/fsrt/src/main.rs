@@ -1,6 +1,7 @@
 #![allow(clippy::type_complexity)]
 
 mod forge_project;
+mod invoke_extension;
 mod mint_common;
 mod mint_fct;
 mod mint_fit;
@@ -71,6 +72,11 @@ pub enum Command {
     /// Mint a Forge Invocation Token (FIT) for a Confluence app with a remote backend.
     /// Internally mints an FCT first, then uses it to mint the FIT in one command.
     MintFit(mint_fit::MintFitArgs),
+
+    /// Invoke a backend function via the `invokeExtension` mutation.
+    /// Mints an FCT (or accepts one via --fct), then calls the resolver directly
+    /// with a tester-controlled payload
+    InvokeExtension(invoke_extension::InvokeExtensionArgs),
 
     /// Harvest an Atlassian session cookie via a real browser and write it to
     /// the configured `auth.raw_cookie_file`. Requires `--features mint_cookie`.
@@ -874,6 +880,10 @@ fn main() -> Result<()> {
 
     if let Some(Command::MintFit(mint_fit_args)) = &args.command {
         return mint_fit::run_mint_fit(mint_fit_args);
+    }
+
+    if let Some(Command::InvokeExtension(invoke_args)) = &args.command {
+        return invoke_extension::run_invoke_extension(invoke_args);
     }
 
     #[cfg(feature = "mint_cookie")]
