@@ -8,15 +8,19 @@
 //!   2. Send the `invokeExtension` mutation. The request shape was reverse-
 //!      engineered from a real `useInvokeExtensionRelayMutation` browser call
 //!      and cross-checked against the @forge/resolver runtime dispatch:
-//!        input.entryPoint = "resolver" (a constant)
-//!        input.payload = {
-//!          call: {                                    (the resolver envelope)
-//!            functionKey:    <resolver.define name>   (--function)
-//!            payload:        <tester JSON>            (--payload)
-//!          }
-//!          context:          <derived context object>
-//!          contextToken:     <minted FCT JWT>         (this is where the FCT goes)
-//!        }
+//!
+//! ```text
+//! input.entryPoint = "resolver" (a constant)
+//! input.payload = {
+//!   call: {                                    (the resolver envelope)
+//!     functionKey:    <resolver.define name>   (--function)
+//!     payload:        <tester JSON>            (--payload)
+//!   }
+//!   context:          <derived context object>
+//!   contextToken:     <minted FCT JWT>         (this is where the FCT goes)
+//! }
+//! ```
+//!
 //!      The @forge/resolver runtime destructures the event as
 //!      `({ call: { functionKey, payload }, context }) => ...` and dispatches on
 //!      `call.functionKey`; a bare `call` string yields `functionKey ===

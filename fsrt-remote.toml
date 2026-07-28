@@ -1,23 +1,9 @@
-# fsrt-remote.toml — Forge remote token minting config (FCT / FIT).
+# fsrt-remote.toml — shared config for all fsrt remote subcommands.
 #
-# ONE config file for all products. Flip `product` between "confluence" and
-# "global" to switch which token type is minted — the matching [confluence] or
-# [global] section below is used, the other is ignored.
+# --dry-run prints the rendered request without sending it
 #
-# A pen tester fills this out once per target app, then runs:
-#   fsrt mint-fct --app-dir /path/to/forge-app --config ./fsrt-remote.toml --dry-run
-#   fsrt mint-fit --app-dir /path/to/forge-app --config ./fsrt-remote.toml
+# WARNING: Output includes auth material (cookies/tokens).
 #
-# Remove --dry-run once the rendered variables look correct.
-#
-# Loaded by the `config` crate (config-rs) and deserialised into MintFctConfig.
-# The GraphQL variables shape is baked into the fsrt binary. environment_id and
-# appVersion are resolved automatically from the Forge platform — you only
-# supply cloud_id, installation_id, and auth below.
-#
-# WARNING: Output includes auth material (cookies/tokens). Do not paste into
-# public tickets, logs, Slack, or chat.
-
 # ==============================================================================
 # Product selector — "confluence" or "global" (Jira, Compass, Rovo).
 # This decides which mutation is sent and which [section] below is read.
@@ -25,7 +11,6 @@
 product = "confluence"
 
 # Atlassian GraphQL gateway for the target site.
-#graphql_endpoint = "https://lhe2.atlassian.net/gateway/api/graphql"
 graphql_endpoint = "https://testerlhe2-1.atlassian.net/gateway/api/graphql"
 
 # ==============================================================================
@@ -34,8 +19,6 @@ graphql_endpoint = "https://testerlhe2-1.atlassian.net/gateway/api/graphql"
 # Switch methods by changing `type`. Secrets are read from local files (paths
 # below); change those files, not this config, so the config stays shareable.
 #
-# NOTE: for product = "global", only raw_cookie works — globalApp_signForgeContextTokens
-# requires SESSION auth and forge_apps_bff rejects API tokens with 403.
 [auth]
 # Option 1: Raw cookie (confirmed working for both products — ~30 day lifetime).
 # Capture the Cookie header from a live browser session via Burp/DevTools.
@@ -44,7 +27,7 @@ raw_cookie_file = "./session-cookie.txt"
 #   Format of session-cookie.txt:
 #   tenant.session.token=eyJ...
 
-# Option 2: API token (confirmed working for Confluence only).
+# Option 2: API token (working for Confluence only).
 # Generate at: https://id.atlassian.com/manage-profile/security/api-tokens
 # type = "basic_api_token"
 # email = "email-here@atlassian.com"
@@ -55,8 +38,7 @@ raw_cookie_file = "./session-cookie.txt"
 # ==============================================================================
 # Only used by the WebDriver-based harvester that (re)mints the raw cookie into
 # `auth.raw_cookie_file`. The tenant site is derived from graphql_endpoint above;
-# the password is NEVER stored here — it's read from the ATL_PASSWORD env var (or
-# prompted).
+# the password is NEVER stored here — it's read from the ATL_PASSWORD env var.
 [cookie]
 username = "testerlhe2-1@protonmail.com"   # Atlassian account email
 # verify_wait_secs = 120   # pause after login to enter an email code (default 120)
@@ -70,18 +52,20 @@ username = "testerlhe2-1@protonmail.com"   # Atlassian account email
 # Auto-resolved for whichever section is active:
 #   environment_id  — via the Forge platform (environmentByKey)
 #   environment_key — which slot to resolve; defaults to "default"
-#   module_key      — auto-detected from manifest.yml (first module key found)
+#   module_key      — auto-detected from manifest.yml. invoke-extension picks the
+#                     module owning --function; mint-fct/fit pick the first module.
+#                     Set module_key below only to override this.
 
 # Used when product = "confluence"
 [confluence]
 cloud_id       = "0c509a2e-5329-4a74-9011-7524108035ba"  # curl https://YOUR-SITE.atlassian.net/_edge/tenant_info
 installation_id = "7aa4dbcd-bf10-471a-839c-f2db12ffb570" # forge install list --json → installationId (bare UUID)
 # environment_key = "default"
-# module_key = "hello-world-macro"
+# module_key = "hello-world-macro"   # override auto-detection (see note above)
 
 # Used when product = "global" (Jira, Compass, Rovo)
 [global]
 cloud_id       = "0c509a2e-5329-4a74-9011-7524108035ba"  # curl https://YOUR-SITE.atlassian.net/_edge/tenant_info
 installation_id = "xx" # forge install list --json → installationId (bare UUID)
 # environment_key = "default"
-# module_key = "hello-jira-issue-panel"
+# module_key = "hello-jira-issue-panel"   # override auto-detection (see note above)

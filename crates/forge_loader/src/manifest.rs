@@ -994,6 +994,19 @@ impl<'a> ForgeModules<'a> {
     }
 }
 
+// Number of module types the FCT auto-detectors scan (see
+// `preferred_fct_modules_with_functions`).
+const FCT_MODULE_TYPE_COUNT: usize = 6;
+
+// One entry per FCT-targetable module type: (module type string, keys declared
+// for that type).
+type FctModuleKeys<'a> = [(&'static str, Vec<&'a str>); FCT_MODULE_TYPE_COUNT];
+
+// Like `FctModuleKeys`, but each key is paired with the resolver function that
+// module invokes (or `None` for endpoint-backed modules).
+type FctModuleKeysWithFns<'a> =
+    [(&'static str, Vec<(&'a str, Option<&'a str>)>); FCT_MODULE_TYPE_COUNT];
+
 impl<'a> ForgeModules<'a> {
     // The module types the Forge Context Token minting flow can target, in
     // preferred auto-detection order. Each tuple is
@@ -1009,7 +1022,7 @@ impl<'a> ForgeModules<'a> {
     // Adding a module type in one place can no longer desync the two
     // auto-detectors (a mismatch there is exactly what causes the wrong
     // `moduleKey` to be chosen).
-    fn preferred_fct_modules(&self) -> [(&'static str, Vec<&'a str>); 6] {
+    fn preferred_fct_modules(&self) -> FctModuleKeys<'a> {
         self.preferred_fct_modules_with_functions()
             .map(|(module_type, entries)| {
                 (
@@ -1030,9 +1043,7 @@ impl<'a> ForgeModules<'a> {
     //
     // Endpoint-backed modules (Forge Remote endpoints, not Forge-hosted
     // resolvers) carry `None` and therefore never match a function name.
-    fn preferred_fct_modules_with_functions(
-        &self,
-    ) -> [(&'static str, Vec<(&'a str, Option<&'a str>)>); 6] {
+    fn preferred_fct_modules_with_functions(&self) -> FctModuleKeysWithFns<'a> {
         [
             (
                 "macro",
