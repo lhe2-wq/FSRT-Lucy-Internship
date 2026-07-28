@@ -26,10 +26,13 @@
 //!      `call.functionKey`; a bare `call` string yields `functionKey ===
 //!      undefined` and "Resolver has no definition for 'undefined'."
 //!
-//! Usage:
-//!   fsrt invoke-extension --app-dir ./my-app --config ./cfg.toml \
+//! Usage (from a Forge app dir containing manifest.yml + fsrt-remote.toml,
+//! --app-dir defaults to "." and --config to "./fsrt-remote.toml"):
+//!   fsrt invoke-extension \
 //!       --function "myResolver" \
 //!       --payload '{"issueId":"10001"}' \
+//!       [--app-dir ./my-app] \
+//!       [--config ./cfg.toml] \
 //!       [--context '<json or contextId>'] \
 //!       [--fct <token>] \
 //!       [--async] \
@@ -101,12 +104,14 @@ const INVOKE_OPERATION_NAME: &str = "InvokeExtension";
 // overrides called out in EAS-4566.
 #[derive(Debug, clap::Args)]
 pub struct InvokeExtensionArgs {
-    /// Forge app directory containing manifest.yml
-    #[arg(long, value_hint = clap::ValueHint::DirPath)]
+    /// Forge app directory containing manifest.yml.
+    /// Defaults to the current working directory.
+    #[arg(long, value_hint = clap::ValueHint::DirPath, default_value = ".")]
     pub app_dir: std::path::PathBuf,
 
-    /// Path to the FCT/FIT config TOML file (see fsrt-remote.toml at repo root)
-    #[arg(long, value_hint = clap::ValueHint::FilePath)]
+    /// Path to the FCT/FIT config TOML file (see fsrt-remote.toml at repo root).
+    /// Defaults to ./fsrt-remote.toml in the current working directory.
+    #[arg(long, value_hint = clap::ValueHint::FilePath, default_value = "./fsrt-remote.toml")]
     pub config: std::path::PathBuf,
 
     /// Function to invoke: the @forge/resolver `resolver.define` name (accepts

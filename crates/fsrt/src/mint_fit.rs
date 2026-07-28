@@ -5,8 +5,9 @@
 //!   1. Mint an FCT (Forge Context Token) — proves the user can invoke the extension
 //!   2. Use the FCT to mint a FIT — signs the actual remote backend invocation
 //!
-//! The user only runs one command:
-//!   fsrt mint-fit --app-dir ./my-app --config ./cfg.yaml
+//! The user only runs one command (--app-dir defaults to ".", --config to
+//! "./fsrt-remote.toml"):
+//!   fsrt mint-fit [--app-dir ./my-app] [--config ./cfg.toml]
 //!
 //! The FCT is minted internally and used as input to the FIT mutation.
 //! It is never written to disk.
@@ -60,18 +61,21 @@ const FIT_OPERATION_NAME: &str = "SignInvocationTokenForUI";
 // ============================================================================
 //
 // Usage:
-//   fsrt mint-fit --app-dir ./my-app --config ./cfg.yaml [--dry-run]
+//   fsrt mint-fit [--app-dir ./my-app] [--config ./cfg.toml] [--dry-run]
+//   (--app-dir defaults to ".", --config to "./fsrt-remote.toml")
 //
 // Same flags as mint-fct — same YAML config file, same app directory.
 // No --fct or --fct-file flag needed — the FCT is minted internally.
 #[derive(Debug, clap::Args)]
 pub struct MintFitArgs {
-    /// Forge app directory containing manifest.yml
-    #[arg(long, value_hint = clap::ValueHint::DirPath)]
+    /// Forge app directory containing manifest.yml.
+    /// Defaults to the current working directory.
+    #[arg(long, value_hint = clap::ValueHint::DirPath, default_value = ".")]
     pub app_dir: std::path::PathBuf,
 
-    /// Path to the FCT/FIT config TOML file (see fsrt-remote.toml at repo root)
-    #[arg(long, value_hint = clap::ValueHint::FilePath)]
+    /// Path to the FCT/FIT config TOML file (see fsrt-remote.toml at repo root).
+    /// Defaults to ./fsrt-remote.toml in the current working directory.
+    #[arg(long, value_hint = clap::ValueHint::FilePath, default_value = "./fsrt-remote.toml")]
     pub config: std::path::PathBuf,
 
     /// Print request details but do not call GraphQL

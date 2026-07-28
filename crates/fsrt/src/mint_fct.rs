@@ -36,15 +36,18 @@ use forge_loader::manifest::ForgeManifest;
 //   clap::Args → clap parses these fields from the CLI flags
 //
 // The user runs:
-//   fsrt mint-fct --app-dir ./my-app --config ./cfg.yaml [--dry-run]
+//   fsrt mint-fct [--app-dir ./my-app] [--config ./cfg.toml] [--dry-run]
+//   (--app-dir defaults to ".", --config to "./fsrt-remote.toml")
 #[derive(Debug, clap::Args)]
 pub struct MintFctArgs {
-    /// Forge app directory containing manifest.yml
-    #[arg(long, value_hint = clap::ValueHint::DirPath)]
+    /// Forge app directory containing manifest.yml.
+    /// Defaults to the current working directory.
+    #[arg(long, value_hint = clap::ValueHint::DirPath, default_value = ".")]
     pub app_dir: std::path::PathBuf,
 
-    /// Path to the FCT config TOML file (see fsrt-remote.toml at repo root)
-    #[arg(long, value_hint = clap::ValueHint::FilePath)]
+    /// Path to the FCT config TOML file (see fsrt-remote.toml at repo root).
+    /// Defaults to ./fsrt-remote.toml in the current working directory.
+    #[arg(long, value_hint = clap::ValueHint::FilePath, default_value = "./fsrt-remote.toml")]
     pub config: std::path::PathBuf,
 
     /// Print request details but do not call GraphQL

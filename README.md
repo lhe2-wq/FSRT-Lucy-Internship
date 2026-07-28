@@ -63,16 +63,22 @@ the Atlassian gateway. This is useful for security testing and local investigati
 FCT-authenticated endpoints.
 
 ```sh
-fsrt mint-fct --app-dir <APP_DIR> --config <CONFIG> [--dry-run]
+fsrt mint-fct [--app-dir <APP_DIR>] [--config <CONFIG>] [--dry-run]
 ```
 
 ```text
 Options:
-      --app-dir <APP_DIR>  Forge app directory containing manifest.yml  [required]
-      --config <CONFIG>    Path to the FCT config YAML file             [required]
+      --app-dir <APP_DIR>  Forge app directory containing manifest.yml
+                           [default: .  (current working directory)]
+      --config <CONFIG>    Path to the FCT config TOML file
+                           [default: ./fsrt-remote.toml]
       --dry-run            Print request details but do not call GraphQL
   -h, --help               Print help
 ```
+
+> The same `--app-dir` / `--config` defaults apply to `mint-fit`, `mint-cookie`,
+> and `invoke-extension`. Run from a Forge app directory that contains both
+> `manifest.yml` and `fsrt-remote.toml` to omit both flags.
 
 #### Step 1 — Choose a config file
 

@@ -8,7 +8,8 @@
 //! `thirtyfour` is an *async* WebDriver client and pulls in `tokio` plus a full
 //! async HTTP stack. The rest of `fsrt` is synchronous (`fn main`, `ureq`), so
 //! we keep this optional to avoid bloating default builds. Enable with:
-//! `cargo run -p fsrt --features mint_cookie -- mint-cookie ...`
+//! `cargo run -p fsrt --features mint_cookie -- mint-cookie [--config ./cfg.toml] [--headed]`
+//! (--config defaults to "./fsrt-remote.toml" in the current working directory)
 //!
 //! ## The sync/async bridge
 //! The public entry point [`harvest_session_cookie`] is a *plain sync fn*. It
@@ -156,7 +157,8 @@ pub struct MintCookieArgs {
     /// Path to the config TOML file (see fsrt-remote.toml at repo root). The
     /// `[cookie]` section and `graphql_endpoint`/`auth.raw_cookie_file` are read
     /// from here — nothing is hardcoded.
-    #[arg(long, value_hint = clap::ValueHint::FilePath)]
+    /// Defaults to ./fsrt-remote.toml in the current working directory.
+    #[arg(long, value_hint = clap::ValueHint::FilePath, default_value = "./fsrt-remote.toml")]
     pub config: std::path::PathBuf,
 
     /// Show the browser window. Needed the first time / whenever Atlassian asks
