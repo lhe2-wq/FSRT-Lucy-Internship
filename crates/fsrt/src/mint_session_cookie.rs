@@ -232,7 +232,10 @@ async fn harvest_async(config: &HarvestConfig) -> Result<String> {
     write_cookie_file(&value, &config.output)?;
 
     let preview: String = value.chars().take(20).collect();
-    println!("[+] Wrote {COOKIE_NAME} to {} (value: {preview}...)", config.output.display());
+    println!(
+        "[+] Wrote {COOKIE_NAME} to {} (value: {preview}...)",
+        config.output.display()
+    );
     println!(
         "    WARNING: this file is a bearer credential. It is gitignored; \
          do not paste it into tickets, logs, or chat."
@@ -260,7 +263,10 @@ async fn run_flow(driver: &WebDriver, config: &HarvestConfig) -> Result<String> 
         wait_for_manual_step(driver, config).await;
     }
 
-    println!("[*] Visiting tenant {} to mint the session cookie ...", config.site_url);
+    println!(
+        "[*] Visiting tenant {} to mint the session cookie ...",
+        config.site_url
+    );
     harvest_cookie(driver, config).await
 }
 
@@ -291,15 +297,12 @@ async fn build_driver(config: &HarvestConfig) -> Result<WebDriver> {
     // Chrome and spawn/tear it down for us — the analog of Python Selenium
     // Manager, so there's no manual `chromedriver` prerequisite. `match_local`
     // pins the driver to the installed browser version.
-    let driver = WebDriver::managed(caps)
-        .match_local()
-        .await
-        .map_err(|e| {
-            MintError::Http(format!(
-                "could not start a managed Chrome WebDriver: {e}. Ensure Chrome is \
+    let driver = WebDriver::managed(caps).match_local().await.map_err(|e| {
+        MintError::Http(format!(
+            "could not start a managed Chrome WebDriver: {e}. Ensure Chrome is \
                  installed and the machine can download a matching chromedriver."
-            ))
-        })?;
+        ))
+    })?;
 
     // Use polling waits with our configured per-step timeout.
     driver
@@ -329,11 +332,7 @@ async fn build_driver(config: &HarvestConfig) -> Result<WebDriver> {
 /// Derive a realistic User-Agent from the running Chrome and apply it, replacing
 /// the tell-tale "HeadlessChrome" token with "Chrome". No-op on any CDP error.
 async fn apply_realistic_user_agent(driver: &WebDriver) {
-    let Ok(info) = driver
-        .cdp()
-        .send_raw("Browser.getVersion", json!({}))
-        .await
-    else {
+    let Ok(info) = driver.cdp().send_raw("Browser.getVersion", json!({})).await else {
         return;
     };
     let Some(ua) = info.get("userAgent").and_then(|v| v.as_str()) else {
@@ -573,11 +572,7 @@ async fn wait_for_manual_step(driver: &WebDriver, config: &HarvestConfig) {
 
 // ── Small helpers ────────────────────────────────────────────────────────────
 
-async fn query_clickable(
-    driver: &WebDriver,
-    css: &str,
-    timeout: Duration,
-) -> Result<WebElement> {
+async fn query_clickable(driver: &WebDriver, css: &str, timeout: Duration) -> Result<WebElement> {
     driver
         .query(By::Css(css))
         .wait(timeout, Duration::from_millis(250))

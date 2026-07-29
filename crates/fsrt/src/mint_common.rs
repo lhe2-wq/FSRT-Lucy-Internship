@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::Path;
 
 use forge_loader::manifest::ForgeManifest;
 
@@ -358,11 +358,7 @@ pub fn extract_manifest_context_for_function(
 
     // Strip the ARI prefix to get the bare UUID.
     // "ari:cloud:ecosystem::app/8bdd65d0-..." → "8bdd65d0-..."
-    let app_id_bare = app_id
-        .rsplit('/')
-        .next()
-        .unwrap_or(&app_id)
-        .to_string();
+    let app_id_bare = app_id.rsplit('/').next().unwrap_or(&app_id).to_string();
 
     let app_name = manifest.app.name.map(|s| s.to_string());
 
@@ -393,9 +389,7 @@ pub fn extract_manifest_context_for_function(
         //    mismatched moduleKey fails confusingly downstream, so error out.
         None => match function {
             Some(func) => match detect_module_for_function(manifest, func) {
-                Some((key, module_type)) => {
-                    (Some(key.to_string()), Some(module_type.to_string()))
-                }
+                Some((key, module_type)) => (Some(key.to_string()), Some(module_type.to_string())),
                 None => {
                     return Err(MintError::Config(format!(
                         "no module in the manifest declares resolver function '{func}'. \
@@ -406,9 +400,7 @@ pub fn extract_manifest_context_for_function(
             },
             // 3. No function supplied — first-module auto-detection.
             None => match manifest.modules.detect_fct_module() {
-                Some((key, module_type)) => {
-                    (Some(key.to_string()), Some(module_type.to_string()))
-                }
+                Some((key, module_type)) => (Some(key.to_string()), Some(module_type.to_string())),
                 None => (None, None),
             },
         },
@@ -448,10 +440,10 @@ pub fn detect_remote_key(
     override_key: Option<&str>,
 ) -> Option<String> {
     // Config override takes priority over auto-detection.
-    if let Some(key) = override_key {
-        if !key.is_empty() {
-            return Some(key.to_string());
-        }
+    if let Some(key) = override_key
+        && !key.is_empty()
+    {
+        return Some(key.to_string());
     }
 
     // Otherwise take the key of the first declared remote from the typed
@@ -476,20 +468,20 @@ pub fn load_secret_from_config(
     file_path: Option<&str>,
 ) -> Result<Option<String>> {
     // 1. Inline value takes highest priority.
-    if let Some(v) = inline {
-        if !v.is_empty() {
-            return Ok(Some(v.to_string()));
-        }
+    if let Some(v) = inline
+        && !v.is_empty()
+    {
+        return Ok(Some(v.to_string()));
     }
 
     // 2. Read from a file.
-    if let Some(path) = file_path {
-        if !path.is_empty() {
-            let contents = fs::read_to_string(path).map_err(|e| {
-                MintError::Config(format!("Could not read secret file '{}': {}", path, e))
-            })?;
-            return Ok(Some(contents.trim().to_string()));
-        }
+    if let Some(path) = file_path
+        && !path.is_empty()
+    {
+        let contents = fs::read_to_string(path).map_err(|e| {
+            MintError::Config(format!("Could not read secret file '{}': {}", path, e))
+        })?;
+        return Ok(Some(contents.trim().to_string()));
     }
 
     Ok(None)
@@ -516,9 +508,12 @@ pub fn build_auth_headers(auth: &AuthConfig) -> Result<HashMap<String, String>> 
                 auth.raw_cookie.as_deref(),
                 auth.raw_cookie_file.as_deref(),
             )?
-            .ok_or_else(|| MintError::Config(
-                "auth.type=raw_cookie requires `raw_cookie` (inline) or `raw_cookie_file`".into(),
-            ))?;
+            .ok_or_else(|| {
+                MintError::Config(
+                    "auth.type=raw_cookie requires `raw_cookie` (inline) or `raw_cookie_file`"
+                        .into(),
+                )
+            })?;
 
             // Only print the first 80 chars — never log a full session token.
             println!("Cookie (first 80 chars): {}...", &raw[..raw.len().min(80)]);
@@ -557,13 +552,14 @@ pub fn build_auth_headers(auth: &AuthConfig) -> Result<HashMap<String, String>> 
                     )
                 })?;
 
-            let token = load_secret_from_config(
-                auth.api_token.as_deref(),
-                auth.api_token_file.as_deref(),
-            )?
-            .ok_or_else(|| MintError::Config(
-                "auth.type=basic_api_token requires `api_token` (inline) or `api_token_file`".into(),
-            ))?;
+            let token =
+                load_secret_from_config(auth.api_token.as_deref(), auth.api_token_file.as_deref())?
+                    .ok_or_else(|| {
+                        MintError::Config(
+                    "auth.type=basic_api_token requires `api_token` (inline) or `api_token_file`"
+                        .into(),
+                )
+                    })?;
 
             // HTTP Basic auth: base64-encode "email:token"
             let credentials = format!("{}:{}", email.trim(), token.trim());
@@ -574,10 +570,7 @@ pub fn build_auth_headers(auth: &AuthConfig) -> Result<HashMap<String, String>> 
                 "Authorization: Basic {}... (truncated)",
                 &encoded[..encoded.len().min(20)]
             );
-            headers.insert(
-                "Authorization".to_string(),
-                format!("Basic {}", encoded),
-            );
+            headers.insert("Authorization".to_string(), format!("Basic {}", encoded));
         }
 
         other => {
@@ -736,11 +729,11 @@ fn render_string(s: &str, context: &JsonValue) -> JsonValue {
 
     // If the entire string is a single placeholder, return the resolved value
     // preserving its original type (number, boolean, etc.)
-    if let Some(caps) = re.captures(s) {
-        if caps[0] == *s {
-            let path = &caps[1];
-            return get_path(context, path).cloned().unwrap_or(JsonValue::Null);
-        }
+    if let Some(caps) = re.captures(s)
+        && caps[0] == *s
+    {
+        let path = &caps[1];
+        return get_path(context, path).cloned().unwrap_or(JsonValue::Null);
     }
 
     // Otherwise replace each placeholder with its string representation.
@@ -781,11 +774,7 @@ pub fn post_graphql(
 ) -> Result<(u16, String)> {
     // Extract origin from the endpoint URL for CSRF headers.
     // "https://lhe2.atlassian.net/gateway/api/graphql" → "https://lhe2.atlassian.net"
-    let origin = endpoint
-        .split('/')
-        .take(3)
-        .collect::<Vec<_>>()
-        .join("/");
+    let origin = endpoint.split('/').take(3).collect::<Vec<_>>().join("/");
 
     // Append operation name as a query param — gateway uses this for routing.
     let url = format!("{}?q={}", endpoint, operation_name);
@@ -1059,7 +1048,7 @@ pub fn resolve_environment(
 // `serde_yaml::from_str` — module/remote details are then read through the
 // typed accessors on `ForgeManifest`/`ForgeModules`, so the manifest is never
 // parsed a second time.
-pub fn load_manifest(app_dir: &PathBuf) -> Result<String> {
+pub fn load_manifest(app_dir: &Path) -> Result<String> {
     let mut manifest_path = app_dir.join("manifest.yaml");
     if !manifest_path.exists() {
         manifest_path = app_dir.join("manifest.yml");
@@ -1090,8 +1079,8 @@ pub fn build_variables(
     // This means ${config.confluence.cloud_id} and ${config.global.cloud_id}
     // resolve correctly because MintFctConfig has both "confluence" and "global"
     // fields that serde serialises by name.
-    let config_value = serde_json::to_value(config)
-        .unwrap_or(JsonValue::Object(Default::default()));
+    let config_value =
+        serde_json::to_value(config).unwrap_or(JsonValue::Object(Default::default()));
 
     let context = serde_json::json!({
         "manifest": {
@@ -1255,9 +1244,7 @@ pub fn mint_fct_jwt_opts(
     // Navigate to the FCT JWT in the response tree using the product-specific key.
     // Confluence: data.confluence_generateForgeContextToken.forgeContextToken.jwt
     // Global:     data.globalApp_signForgeContextTokens.tokens[0].jwt
-    let fct_obj = parsed
-        .get("data")
-        .and_then(|d| d.get(response_key));
+    let fct_obj = parsed.get("data").and_then(|d| d.get(response_key));
 
     let success = fct_obj
         .and_then(|o| o.get("success"))

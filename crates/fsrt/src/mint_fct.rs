@@ -14,15 +14,8 @@
 // `super::` means "the parent module" — in Rust's module tree, mint_fct and
 // mint_common are siblings under the same crate root (main.rs).
 use super::mint_common::{
-    Product,
-    build_auth_headers,
-    extract_manifest_context,
-    load_config,
-    load_manifest,
-    mint_fct_jwt,
-    resolve_environment,
-    DEFAULT_CONFLUENCE_MUTATION,
-    DEFAULT_GLOBAL_APP_MUTATION,
+    DEFAULT_CONFLUENCE_MUTATION, DEFAULT_GLOBAL_APP_MUTATION, Product, build_auth_headers,
+    extract_manifest_context, load_config, load_manifest, mint_fct_jwt, resolve_environment,
 };
 
 use forge_loader::manifest::ForgeManifest;
@@ -93,10 +86,7 @@ pub fn run_mint_fct(args: &MintFctArgs) -> std::result::Result<(), Box<dyn std::
             .confluence
             .as_ref()
             .and_then(|c| c.module_key.as_deref()),
-        Product::Global => config
-            .global
-            .as_ref()
-            .and_then(|g| g.module_key.as_deref()),
+        Product::Global => config.global.as_ref().and_then(|g| g.module_key.as_deref()),
     };
 
     let mut manifest_ctx = extract_manifest_context(&manifest, config_module_key);
@@ -126,10 +116,7 @@ pub fn run_mint_fct(args: &MintFctArgs) -> std::result::Result<(), Box<dyn std::
         Product::Confluence => DEFAULT_CONFLUENCE_MUTATION,
         Product::Global => DEFAULT_GLOBAL_APP_MUTATION,
     };
-    println!(
-        "{}",
-        config.mutation.as_deref().unwrap_or(default_mutation)
-    );
+    println!("{}", config.mutation.as_deref().unwrap_or(default_mutation));
 
     // --- 6. Dry-run exit ---
     // Build and print variables for inspection, but don't send the request.

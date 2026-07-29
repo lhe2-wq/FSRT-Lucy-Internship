@@ -17,16 +17,8 @@
 // ============================================================================
 
 use super::mint_common::{
-    Product,
-    build_auth_headers,
-    detect_remote_key,
-    extract_manifest_context,
-    load_config,
-    load_manifest,
-    mint_fct_jwt,
-    post_graphql,
-    resolve_environment,
-    MintError,
+    MintError, Product, build_auth_headers, detect_remote_key, extract_manifest_context,
+    load_config, load_manifest, mint_fct_jwt, post_graphql, resolve_environment,
 };
 
 use forge_loader::manifest::ForgeManifest;
@@ -118,10 +110,7 @@ pub fn run_mint_fit(args: &MintFitArgs) -> std::result::Result<(), Box<dyn std::
             .confluence
             .as_ref()
             .and_then(|c| c.module_key.as_deref()),
-        Product::Global => config
-            .global
-            .as_ref()
-            .and_then(|g| g.module_key.as_deref()),
+        Product::Global => config.global.as_ref().and_then(|g| g.module_key.as_deref()),
     };
 
     let mut manifest_ctx = extract_manifest_context(&manifest, config_module_key);
@@ -135,12 +124,14 @@ pub fn run_mint_fit(args: &MintFitArgs) -> std::result::Result<(), Box<dyn std::
         .as_ref()
         .and_then(|c| c.module_key.as_deref()); // reuse module_key field for now
 
-    let remote_key = detect_remote_key(&manifest, remote_key_override)
-        .ok_or_else(|| MintError::Config(
+    let remote_key = detect_remote_key(&manifest, remote_key_override).ok_or_else(|| {
+        MintError::Config(
             "No remotes declared in manifest.yml. \
              FIT minting requires a remote backend. \
-             Add a `remotes:` section with a `key:` field to your manifest.".to_string()
-        ))?;
+             Add a `remotes:` section with a `key:` field to your manifest."
+                .to_string(),
+        )
+    })?;
 
     // --- 4. Print diagnostic info ---
     println!("\n=== Derived manifest context ===");
@@ -258,7 +249,9 @@ pub fn run_mint_fit(args: &MintFitArgs) -> std::result::Result<(), Box<dyn std::
                             .unwrap_or("(no message)")
                     );
                 }
-                return Err(MintError::FctFailed("FIT minting failed — see errors above".into()).into());
+                return Err(
+                    MintError::FctFailed("FIT minting failed — see errors above".into()).into(),
+                );
             }
             println!("\n[!] signInvocationTokenForUI missing from response data.");
         }

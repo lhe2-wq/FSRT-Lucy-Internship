@@ -43,15 +43,8 @@
 // ============================================================================
 
 use super::mint_common::{
-    Product,
-    build_auth_headers,
-    extract_manifest_context_for_function,
-    load_config,
-    load_manifest,
-    mint_fct_jwt_opts,
-    post_graphql,
-    resolve_environment,
-    MintError,
+    MintError, Product, build_auth_headers, extract_manifest_context_for_function, load_config,
+    load_manifest, mint_fct_jwt_opts, post_graphql, resolve_environment,
 };
 
 use forge_loader::manifest::ForgeManifest;
@@ -189,24 +182,17 @@ pub fn run_invoke_extension(
             .confluence
             .as_ref()
             .and_then(|c| c.module_key.as_deref()),
-        Product::Global => config
-            .global
-            .as_ref()
-            .and_then(|g| g.module_key.as_deref()),
+        Product::Global => config.global.as_ref().and_then(|g| g.module_key.as_deref()),
     };
 
     // When no module_key is configured, prefer the module whose resolver.function
     // matches --function so context.moduleKey matches the invoked resolver.
-    let mut manifest_ctx = extract_manifest_context_for_function(
-        &manifest,
-        config_module_key,
-        Some(&args.function),
-    )?;
+    let mut manifest_ctx =
+        extract_manifest_context_for_function(&manifest, config_module_key, Some(&args.function))?;
 
     // --- 4. Parse the tester-supplied payload JSON (needed for both paths) ---
-    let payload: JsonValue = serde_json::from_str(&args.payload).map_err(|e| {
-        MintError::Config(format!("--payload is not valid JSON: {e}"))
-    })?;
+    let payload: JsonValue = serde_json::from_str(&args.payload)
+        .map_err(|e| MintError::Config(format!("--payload is not valid JSON: {e}")))?;
 
     // --- 5. Derive contextIds (required field [ID!]!) from config — no network. ---
     let context_ids = resolve_context_ids(&config)?;
@@ -323,7 +309,10 @@ pub fn run_invoke_extension(
 
     match invoke_obj {
         Some(result) => {
-            let success = result.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+            let success = result
+                .get("success")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             if success {
                 println!("Status: SUCCESS");
                 match result.get("response").filter(|r| !r.is_null()) {
@@ -500,9 +489,8 @@ fn resolve_context_object(
 ) -> std::result::Result<JsonValue, MintError> {
     match &args.context {
         Some(raw) => {
-            let parsed: JsonValue = serde_json::from_str(raw).map_err(|e| {
-                MintError::Config(format!("--context is not valid JSON: {e}"))
-            })?;
+            let parsed: JsonValue = serde_json::from_str(raw)
+                .map_err(|e| MintError::Config(format!("--context is not valid JSON: {e}")))?;
             if !parsed.is_object() {
                 return Err(MintError::Config(
                     "--context must be a JSON object (the payload.context value)".into(),
@@ -569,10 +557,7 @@ fn build_context_object(
         context.insert("appVersion".into(), JsonValue::String(v.clone()));
     }
     if let Some(v) = &manifest_ctx.module_type {
-        context.insert(
-            "extension".into(),
-            serde_json::json!({ "type": v }),
-        );
+        context.insert("extension".into(), serde_json::json!({ "type": v }));
     }
 
     JsonValue::Object(context)
