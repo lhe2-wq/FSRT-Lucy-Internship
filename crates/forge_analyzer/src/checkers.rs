@@ -259,6 +259,7 @@ impl<'cx> Dataflow<'cx> for AuthorizeDataflow {
             | Intrinsic::ApiCall(_)
             | Intrinsic::SafeCall(_)
             | Intrinsic::EnvRead
+            | Intrinsic::InvokeRemote
             | Intrinsic::StorageRead => initial_state,
         }
     }
@@ -512,6 +513,7 @@ impl<'cx> Runner<'cx> for AuthZChecker {
             | Intrinsic::EnvRead
             | Intrinsic::UserFieldAccess
             | Intrinsic::ApiCustomField
+            | Intrinsic::InvokeRemote
             | Intrinsic::StorageRead => ControlFlow::Continue(*state),
         }
     }
@@ -575,6 +577,7 @@ impl<'cx> Dataflow<'cx> for AuthenticateDataflow {
             | Intrinsic::ApiCall(_)
             | Intrinsic::ApiCustomField
             | Intrinsic::UserFieldAccess
+            | Intrinsic::InvokeRemote
             | Intrinsic::SafeCall(_) => initial_state,
         }
     }
@@ -683,7 +686,7 @@ impl<'cx> Runner<'cx> for AuthenticateChecker {
             Intrinsic::ApiCall(_) | Intrinsic::UserFieldAccess | Intrinsic::ApiCustomField => {
                 ControlFlow::Continue(*state)
             }
-            Intrinsic::SafeCall(_) => ControlFlow::Continue(*state),
+            Intrinsic::SafeCall(_) | Intrinsic::InvokeRemote => ControlFlow::Continue(*state),
         }
     }
 }
