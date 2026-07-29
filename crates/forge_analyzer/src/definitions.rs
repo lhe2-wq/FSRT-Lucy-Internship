@@ -1152,6 +1152,21 @@ impl FunctionAnalyzer<'_> {
             {
                 Some(Intrinsic::Fetch)
             }
+            // Forge Remote egress: `import { invokeRemote } from '@forge/api';`
+            // called directly as `invokeRemote(remoteKey, options)`.
+            // The call's path lives in the SECOND argument's `path`
+            // property (arg[1].path), not in `first_arg` — 
+            // extraction happens in a later pass, so here we
+            // only need to tag the call. We match on the named import so we
+            // don't accidentally classify unrelated `@forge/api` members.
+            [PropPath::Def(def), ..]
+                if self
+                    .res
+                    .is_imported_from(def, "@forge/api")
+                    .is_some_and(|imp| matches!(imp, ImportKind::Named(s) if *s == *"invokeRemote")) =>
+            {
+                Some(Intrinsic::InvokeRemote)
+            }
             [PropPath::Def(def), ..] if self.res.is_imported_from(def, "@forge/api").is_some() => {
                 if let Some(ImportKind::Named(name)) = self.res.is_imported_from(def, "@forge/api")
                 {
