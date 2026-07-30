@@ -1,0 +1,16 @@
+modules:
+  webtrigger:
+    - key: probe-trigger
+      function: probe-fn
+  function:
+    - key: probe-fn
+      handler: index.run
+remotes:
+  - key: my-remote
+    baseUrl: https://example.com
+    operations:
+      - compute
+app:
+  id: ari:cloud:ecosystem::app/00000000-0000-0000-0000-000000000000
+  runtime:
+    name: nodejs22.x
