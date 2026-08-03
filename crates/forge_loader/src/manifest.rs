@@ -496,6 +496,8 @@ where
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Remotes {
     #[serde(default)]
+    pub key: String,
+    #[serde(default)]
     pub auth: Value,
 }
 
@@ -969,6 +971,26 @@ impl<'a> ForgeModules<'a> {
                 admin,
             })
         })
+    }
+}
+
+impl ForgeModules<'_> {
+    /// Returns the FCT `module_type` string for a caller-supplied `module_key`, or `None`.
+    pub fn fct_module_type_for_key(&self, key: &str) -> Option<&'static str> {
+        if self.macros.iter().any(|m| m.common_keys.key == key) {
+            Some("macro")
+        } else if self.confluence_global_page.iter().any(|m| m.key == key)
+            || self.jira_global_page.iter().any(|m| m.key == key)
+            || self.project_page.iter().any(|m| m.key == key)
+        {
+            Some("globalPage")
+        } else if self.space_page.iter().any(|m| m.key == key) {
+            Some("spacePage")
+        } else if self.issue_panel.iter().any(|m| m.key == key) {
+            Some("issuePanel")
+        } else {
+            None
+        }
     }
 }
 
@@ -1477,5 +1499,33 @@ permissions:
         ));
         assert!(!is_hardcoded_variable("{{prefix}}_{{suffix}}"));
         assert!(!is_hardcoded_variable("     {{client_secret}}     "));
+    }
+
+    #[test]
+    fn fct_module_type_for_key_maps_known_and_unknown() {
+        let json = r#"{
+            "app": { "name": "My App", "id": "my-app" },
+            "modules": {
+                "macro": [
+                    { "key": "my-macro", "function": "macroFn" }
+                ],
+                "jira:globalPage": [
+                    { "key": "my-jira-page", "function": "jiraPageFn" }
+                ]
+            }
+        }"#;
+        let manifest: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
+
+        // Known keys resolve to their declared module type...
+        assert_eq!(
+            manifest.modules.fct_module_type_for_key("my-macro"),
+            Some("macro")
+        );
+        assert_eq!(
+            manifest.modules.fct_module_type_for_key("my-jira-page"),
+            Some("globalPage")
+        );
+        // ...and an unknown key resolves to None.
+        assert_eq!(manifest.modules.fct_module_type_for_key("nope"), None);
     }
 }
