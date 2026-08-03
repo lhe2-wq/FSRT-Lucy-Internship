@@ -891,9 +891,13 @@ fn main() -> Result<()> {
             &mint_args.config,
             &mint_args.module_key,
             mint_args.dry_run,
-        )? {
-            Some(jwt) => println!("{jwt}"),
-            None => {} // dry run: variables already printed by run_mint_fct
+        ) {
+            Ok(Some(jwt)) => println!("{jwt}"),
+            Ok(None) => {} // dry run: variables already printed by run_mint_fct
+            Err(err) => {
+                eprintln!("error: {err}");
+                std::process::exit(1);
+            }
         }
         return Ok(());
     }

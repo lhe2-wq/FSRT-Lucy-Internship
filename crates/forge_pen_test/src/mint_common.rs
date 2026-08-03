@@ -113,8 +113,8 @@ pub struct MintFctConfig {
     // Required: which Atlassian product to mint the token for.
     pub product: Product,
 
-    // The Atlassian GraphQL gateway URL.
-    pub graphql_endpoint: String,
+    // Atlassian site subdomain where GraphQL gateway URL is derived.
+    pub site_id: String,
 
     // Optional: override the default FCT GraphQL mutation.
     pub mutation: Option<String>,
@@ -122,15 +122,27 @@ pub struct MintFctConfig {
     // Auth credentials — how to authenticate the HTTP request.
     pub auth: AuthConfig,
 
-    // Confluence-specific IDs.
-    pub confluence: Option<ConfluenceConfig>,
+    // App/site IDs (top-level; formerly the `[global]` section).
+    pub cloud_id: Option<String>,
+    pub installation_id: Option<String>,
+    pub environment_id: Option<String>,
+    pub environment_type: Option<String>,
+    pub module_key: Option<String>,
+    // Forge environment slot used to look up
+    pub environment_key: Option<String>,
 
-    // Global app IDs.
-    pub global: Option<GlobalAppConfig>,
-
-    // The GraphQL variables template — an arbitrary object containing
-    // `${...}` placeholders that get substituted at runtime.
+    // The GraphQL variables template.
     pub variables: Option<JsonValue>,
+}
+
+impl MintFctConfig {
+    // Derives the Atlassian GraphQL gateway URL from `site_id`.
+    pub fn graphql_endpoint(&self) -> String {
+        format!(
+            "https://{}.atlassian.net/gateway/api/graphql",
+            self.site_id
+        )
+    }
 }
 
 // `auth` section of the config, either session cookie or API token
@@ -154,42 +166,7 @@ fn default_auth_type() -> String {
     "raw_cookie".to_string()
 }
 
-// The `confluence:` section of the config.
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct ConfluenceConfig {
-    pub cloud_id: Option<String>,
-    pub account_id: Option<String>,
-    pub content_id: Option<String>,
-    pub space_key: Option<String>,
-    pub space_id: Option<String>,
-    pub installation_id: Option<String>,
-    pub environment_id: Option<String>,
-    pub environment_type: Option<String>,
-    pub local_id: Option<String>,
-    pub module_key: Option<String>,
-    pub site_url: Option<String>,
-    // Named Forge environment slot; used to look up environment_id when it
-    // isn't supplied explicitly. Defaults to DEFAULT_ENVIRONMENT_KEY.
-    pub environment_key: Option<String>,
-}
-
-// The `global:` section of the config.
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct GlobalAppConfig {
-    pub cloud_id: Option<String>,
-    pub installation_id: Option<String>,
-    pub environment_id: Option<String>,
-    pub environment_type: Option<String>,
-    pub module_key: Option<String>,
-    // Named Forge environment slot; used to look up environment_id when it
-    // isn't supplied explicitly. Defaults to DEFAULT_ENVIRONMENT_KEY.
-    pub environment_key: Option<String>,
-}
-
-// The Atlassian product an FCT is being minted for. Resolved at runtime from the
-// manifest module's product-namespace prefix (reported by
-// `ForgeModules::fct_module_for_key`). Distinct from the two GraphQL request
-// *shapes* (`Product::Confluence` vs `Product::Global`).
+// The Atlassian product an FCT is being minted for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FctProduct {
     Confluence,
@@ -198,8 +175,7 @@ pub enum FctProduct {
 }
 
 impl FctProduct {
-    // Maps a manifest product-namespace prefix (e.g. "jira",
-    // "jiraServiceManagement") to an FctProduct, or `None` if unrecognised.
+    // Maps a manifest product-namespace prefix or `None` if unrecognised.
     fn from_manifest_prefix(prefix: &str) -> Option<Self> {
         match prefix {
             "confluence" => Some(FctProduct::Confluence),
@@ -209,16 +185,10 @@ impl FctProduct {
         }
     }
 
-    // The site context ARI resource-owner segment. Validated by the gateway's
-    // `validateForgeContextAri`:
-    //   - Confluence        -> confluence
-    //   - Jira              -> jira
-    //   - Jira Service Mgmt -> jira-servicedesk
+    // The site context ARI resource-owner segment.
     //
-    // NOTE: the platform is migrating Jira/JSM site ARIs toward a shared
-    // `platform` owner. Keep per-product owners until the gateway requires it.
-    // Bitbucket is intentionally absent: it uses a *workspace* ARI
-    // (`ari:cloud:bitbucket::workspace/<workspaceId>`), a different shape.
+    // NOTE: Update for other products like Bitbucket:
+    // it uses a *workspace* ARI (`ari:cloud:bitbucket::workspace/<workspaceId>`).
     fn ari_owner(self) -> &'static str {
         match self {
             FctProduct::Confluence => "confluence",
@@ -264,10 +234,21 @@ pub fn extract_manifest_context(
 
     let (module_type, product_prefix) =
         manifest.modules.fct_module_for_key(module_key).ok_or_else(|| {
+            let available = manifest.modules.fct_module_keys();
+            let hint = if available.is_empty() {
+                "the manifest declares no FCT-capable modules".to_string()
+            } else {
+                format!(
+                    "available module keys:\n{}",
+                    available
+                        .iter()
+                        .map(|k| format!("  - {k}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                )
+            };
             MintError::Config(format!(
-                "module_key '{module_key}' does not match any FCT-capable module in the manifest \
-                 (supported: macro, confluence:globalPage, confluence:spacePage, jira:globalPage, \
-                 jira:projectPage, jira:issuePanel, jiraServiceManagement:queuePage)"
+                "module_key '{module_key}' does not match any FCT-capable module in the manifest\n{hint}"
             ))
         })?;
 
@@ -697,40 +678,21 @@ pub fn resolve_environment(
     manifest_ctx: &mut ManifestContext,
     auth_headers: &HashMap<String, String>,
 ) -> Result<()> {
-    let (explicit_id, env_key) = match config.product {
-        Product::Confluence => {
-            let c = config.confluence.as_ref();
-            (
-                c.and_then(|c| c.environment_id.clone()),
-                c.and_then(|c| c.environment_key.clone()),
-            )
-        }
-        Product::Global => {
-            let g = config.global.as_ref();
-            (
-                g.and_then(|g| g.environment_id.clone()),
-                g.and_then(|g| g.environment_key.clone()),
-            )
-        }
-    };
-
-    if let Some(id) = explicit_id {
+    if let Some(id) = config.environment_id.clone() {
         manifest_ctx.environment_id = Some(id);
         return Ok(());
     }
+    let env_key = config.environment_key.clone();
 
+    let endpoint = config.graphql_endpoint();
     let app_env = match env_key {
-        // Config pins an explicit key: use it verbatim, no fallback.
-        Some(key) => fetch_app_environment(
-            &config.graphql_endpoint,
-            auth_headers,
-            &manifest_ctx.app_id,
-            &key,
-        )?,
+        Some(key) => {
+            fetch_app_environment(&endpoint, auth_headers, &manifest_ctx.app_id, &key)?
+        }
         // No key configured: prefer "production", then fall back to "default".
         None => {
             match fetch_app_environment(
-                &config.graphql_endpoint,
+                &endpoint,
                 auth_headers,
                 &manifest_ctx.app_id,
                 PRODUCTION_ENVIRONMENT_KEY,
@@ -742,7 +704,7 @@ pub fn resolve_environment(
                         PRODUCTION_ENVIRONMENT_KEY, prod_err, DEFAULT_ENVIRONMENT_KEY
                     );
                     fetch_app_environment(
-                        &config.graphql_endpoint,
+                        &endpoint,
                         auth_headers,
                         &manifest_ctx.app_id,
                         DEFAULT_ENVIRONMENT_KEY,
@@ -758,8 +720,7 @@ pub fn resolve_environment(
     Ok(())
 }
 
-// Shared manifest loading logic — reads the manifest.yml (or .yaml) from an app
-// directory exactly once and returns its raw text.
+// Reads the manifest.yml (or .yaml) from an app directory.
 pub fn load_manifest(app_dir: &Path) -> Result<String> {
     let mut manifest_path = app_dir.join("manifest.yaml");
     if !manifest_path.exists() {
@@ -775,8 +736,7 @@ pub fn load_manifest(app_dir: &Path) -> Result<String> {
     Ok(fs::read_to_string(&manifest_path)?)
 }
 
-// Builds the final FCT GraphQL variables by rendering the template from the
-// config against the manifest + config context.
+// Builds the final FCT GraphQL variables.
 pub fn build_variables(
     config: &MintFctConfig,
     manifest_ctx: &ManifestContext,
@@ -785,14 +745,8 @@ pub fn build_variables(
         serde_json::to_value(config).unwrap_or(JsonValue::Object(Default::default()));
 
     // Resolve the product-correct site context ARI for the global-app shape.
-    // The product is taken from the manifest (never hardcoded); the cloud id
-    // comes from the `global:` config section.
-    let global_cloud_id = config
-        .global
-        .as_ref()
-        .and_then(|g| g.cloud_id.as_deref())
-        .unwrap_or("");
-    let context_ari = manifest_ctx.product.context_ari(global_cloud_id);
+    let cloud_id = config.cloud_id.as_deref().unwrap_or("");
+    let context_ari = manifest_ctx.product.context_ari(cloud_id);
 
     let context = serde_json::json!({
         "manifest": {
@@ -805,7 +759,6 @@ pub fn build_variables(
             "app_version":    manifest_ctx.app_version,
         },
         "config": config_value,
-        // Product-resolved site context ARI (used by the global-app template).
         "context_ari": context_ari,
     });
 
@@ -814,14 +767,15 @@ pub fn build_variables(
     } else {
         match config.product {
             Product::Confluence => serde_json::json!({
-                "cloudId": "${config.confluence.cloud_id}",
+                "cloudId": "${config.cloud_id}",
                 "input": {
-                    "contextIds": ["ari:cloud:confluence::site/${config.confluence.cloud_id}"],
+                    // Product-resolved at runtime from the manifest.
+                    "contextIds": ["${context_ari}"],
                     "extensionSpecificContexts": {
                         "appVersion": "${manifest.app_version}",
                         "extensionId": "ari:cloud:ecosystem::extension/${manifest.app_id_bare}/${manifest.environment_id}/static/${manifest.module_key}",
                         "extensionType": "xen:macro",
-                        "installationId": "${config.confluence.installation_id}",
+                        "installationId": "${config.installation_id}",
                         "context": {
                             "moduleKey": "${manifest.module_key}",
                             "type": "${manifest.module_type}",
@@ -840,10 +794,10 @@ pub fn build_variables(
                         "appVersion": "${manifest.app_version}",
                         "extensionId": "ari:cloud:ecosystem::extension/${manifest.app_id_bare}/${manifest.environment_id}/static/${manifest.module_key}",
                         "extensionType": "xen:${manifest.module_type}",
-                        "installationId": "${config.global.installation_id}",
+                        "installationId": "${config.installation_id}",
                         "context": {
                             "moduleKey": "${manifest.module_key}",
-                            "cloudId": "${config.global.cloud_id}",
+                            "cloudId": "${config.cloud_id}",
                             "environmentId": "${manifest.environment_id}",
                             "type": "${manifest.module_type}",
                             "extension": { "type": "${manifest.module_type}" }
@@ -908,7 +862,7 @@ pub fn mint_fct_jwt_opts(
     }
 
     let (status, body) = post_graphql(
-        &config.graphql_endpoint,
+        &config.graphql_endpoint(),
         operation_name,
         auth_headers,
         query,
@@ -1075,7 +1029,11 @@ mod tests {
         let manifest: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
         let err = extract_manifest_context(&manifest, "does-not-exist").unwrap_err();
         assert!(matches!(err, MintError::Config(_)), "got: {err:?}");
-        assert!(err.to_string().contains("does-not-exist"));
+        let msg = err.to_string();
+        assert!(msg.contains("does-not-exist"));
+        // The error suggests the actual module keys present in the manifest.
+        assert!(msg.contains("available module keys"), "got: {msg}");
+        assert!(msg.contains("my-macro"), "got: {msg}");
     }
 
     #[test]
@@ -1134,7 +1092,7 @@ mod tests {
     fn global_config(cloud_id: &str) -> MintFctConfig {
         MintFctConfig {
             product: Product::Global,
-            graphql_endpoint: "https://example.invalid/graphql".to_string(),
+            site_id: "example".to_string(),
             mutation: None,
             auth: AuthConfig {
                 auth_type: default_auth_type(),
@@ -1144,17 +1102,23 @@ mod tests {
                 api_token: None,
                 api_token_file: None,
             },
-            confluence: None,
-            global: Some(GlobalAppConfig {
-                cloud_id: Some(cloud_id.to_string()),
-                installation_id: Some("inst-1".to_string()),
-                environment_id: None,
-                environment_type: None,
-                module_key: None,
-                environment_key: None,
-            }),
+            cloud_id: Some(cloud_id.to_string()),
+            installation_id: Some("inst-1".to_string()),
+            environment_id: None,
+            environment_type: None,
+            module_key: None,
+            environment_key: None,
             variables: None,
         }
+    }
+
+    #[test]
+    fn graphql_endpoint_is_derived_from_site_id() {
+        let cfg = global_config("cid");
+        assert_eq!(
+            cfg.graphql_endpoint(),
+            "https://example.atlassian.net/gateway/api/graphql"
+        );
     }
 
     fn manifest_ctx_for(product: FctProduct) -> ManifestContext {
@@ -1189,6 +1153,24 @@ mod tests {
         assert_eq!(
             vars["input"]["contextIds"][0],
             json!("ari:cloud:jira-servicedesk::site/cloud-jsm")
+        );
+    }
+
+    #[test]
+    fn build_variables_confluence_uses_flat_ids() {
+        let mut cfg = global_config("cloud-conf");
+        cfg.product = Product::Confluence;
+        let vars =
+            build_variables(&cfg, &manifest_ctx_for(FctProduct::Confluence)).unwrap();
+        // Flattened top-level cloud_id feeds the Confluence template.
+        assert_eq!(vars["cloudId"], json!("cloud-conf"));
+        assert_eq!(
+            vars["input"]["contextIds"][0],
+            json!("ari:cloud:confluence::site/cloud-conf")
+        );
+        assert_eq!(
+            vars["input"]["extensionSpecificContexts"]["installationId"],
+            json!("inst-1")
         );
     }
 }

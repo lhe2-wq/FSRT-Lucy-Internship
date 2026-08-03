@@ -1,1 +1,7 @@
+# Build artifacts
 /target
+
+# Local secrets & minting config (never commit — contain auth material)
+fsrt-remote.toml
+session-cookie.txt
+api-token.txt

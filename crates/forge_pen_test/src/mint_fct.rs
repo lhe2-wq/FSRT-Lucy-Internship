@@ -12,7 +12,7 @@ use tracing::{debug, info};
 
 use crate::mint_common::{
     build_auth_headers, build_variables, extract_manifest_context, load_config, load_manifest,
-    mint_fct_jwt, resolve_environment, MintError, Result,
+    mint_fct_jwt, resolve_environment, MintError, Product, Result,
 };
 
 /// Runs the `mint-fct` flow and returns the minted FCT JWT.
@@ -39,13 +39,19 @@ pub fn run_mint_fct(
         ));
     }
 
-    // 1. Load config + manifest.
     let config = load_config(config_path)?;
+
+    if config.auth.auth_type == "basic_api_token" && config.product != Product::Confluence {
+        return Err(MintError::Config(
+            "auth.type=basic_api_token is only supported for product = \"confluence\"; \
+             use raw_cookie for global apps"
+                .to_string(),
+        ));
+    }
+
     let manifest_text = load_manifest(app_dir)?;
     let manifest: ForgeManifest<'_> = serde_yaml::from_str(&manifest_text)?;
 
-    // 2. Resolve the manifest context for the requested module. This errors if
-    //    `module_key` matches no FCT-capable module in the manifest.
     let mut manifest_ctx = extract_manifest_context(&manifest, module_key)?;
 
     // Diagnostics go to stderr (via tracing); only the JWT is written to stdout.
@@ -56,18 +62,14 @@ pub fn run_mint_fct(
         app_name = ?manifest_ctx.app_name,
         module_key = ?manifest_ctx.module_key,
         module_type = ?manifest_ctx.module_type,
-        endpoint = %config.graphql_endpoint,
+        endpoint = %config.graphql_endpoint(),
         "derived manifest context"
     );
 
-    // 3. Build auth headers.
     let auth_headers = build_auth_headers(&config.auth)?;
 
-    // 4. Resolve environment_id + app_version from the Forge platform
-    //    (production → default fallback when not pinned in config).
     resolve_environment(&config, &mut manifest_ctx, &auth_headers)?;
 
-    // 5. Dry run: render and return the variables without sending the request.
     if dry_run {
         let variables = build_variables(&config, &manifest_ctx)?;
         let pretty = serde_json::to_string_pretty(&variables)
@@ -77,7 +79,6 @@ pub fn run_mint_fct(
         return Ok(None);
     }
 
-    // 6. Mint the token.
     let jwt = mint_fct_jwt(&config, &manifest_ctx, &auth_headers)?;
     debug!("successfully minted Forge Context Token");
     Ok(Some(jwt))
@@ -89,8 +90,7 @@ mod tests {
 
     #[test]
     fn run_mint_fct_rejects_empty_module_key() {
-        // An empty/whitespace module key fails fast before any config/manifest
-        // I/O, with a clear config error.
+        // Module key is required, fails fast.
         for key in ["", "   "] {
             let err = run_mint_fct(Path::new("."), Path::new("./nope.toml"), key, true)
                 .unwrap_err();

@@ -53,6 +53,28 @@ or alternatively:
 cargo install --git https://github.com/atlassian-labs/FSRT --locked
 ```
 
+## Commands
+
+```text
+mint-fct    Mint a Forge Context Token (FCT)
+```
+
+For dynamic testing, `mint-fct` mints Forge tokens against a live Atlassian site.
+It reads a TOML config (default `./fsrt-remote.toml`); see
+[`fsrt-remote.toml.example`](fsrt-remote.toml.example) for a commented example.
+Run with `--help` for options.
+
+### Configuration
+
+The config is documented inline in
+[`fsrt-remote.toml.example`](fsrt-remote.toml.example). In short: `product`
+selects the request shape (`"confluence"` or `"global"`) and is the only toggle;
+`site_id` derives the gateway URL; `cloud_id`/`installation_id` are shared across
+products; and `[auth]` is a session cookie (all products) or a Confluence-only
+API token. Prefer the `*_file` auth variants — the real `fsrt-remote.toml`,
+`session-cookie.txt`, and `api-token.txt` are gitignored and must never be
+committed.
+
 ## Tests
 
 To run the test suite:

@@ -1008,6 +1008,19 @@ impl ForgeModules<'_> {
     pub fn fct_module_type_for_key(&self, key: &str) -> Option<&'static str> {
         self.fct_module_for_key(key).map(|(module_type, _)| module_type)
     }
+
+    /// Collects the keys of every FCT-capable module declared in this manifest.
+    pub fn fct_module_keys(&self) -> Vec<&str> {
+        let mut keys = Vec::new();
+        keys.extend(self.macros.iter().map(|m| m.common_keys.key));
+        keys.extend(self.confluence_global_page.iter().map(|m| m.key));
+        keys.extend(self.space_page.iter().map(|m| m.key));
+        keys.extend(self.jira_global_page.iter().map(|m| m.key));
+        keys.extend(self.project_page.iter().map(|m| m.key));
+        keys.extend(self.issue_panel.iter().map(|m| m.key));
+        keys.extend(self.queue_page.iter().map(|m| m.key));
+        keys
+    }
 }
 
 impl<S> FunctionRef<'_, S> {

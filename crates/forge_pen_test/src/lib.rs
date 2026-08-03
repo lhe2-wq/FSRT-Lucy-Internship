@@ -11,7 +11,7 @@ pub use mint_fct::run_mint_fct;
 
 // Config model (deserialised from `fsrt-remote.toml`) + product selector.
 pub use mint_common::{
-    AuthConfig, ConfluenceConfig, GlobalAppConfig, ManifestContext, MintFctConfig, Product,
+    AuthConfig, ManifestContext, MintFctConfig, Product,
 };
 
 // High-level operations: load config/manifest, build auth, resolve the
