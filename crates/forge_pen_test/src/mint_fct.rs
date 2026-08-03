@@ -31,8 +31,6 @@ pub fn run_mint_fct(
     module_key: &str,
     dry_run: bool,
 ) -> Result<Option<String>> {
-    // The module key is a required input; reject an empty value early with a
-    // clear message rather than failing deep in manifest resolution.
     if module_key.trim().is_empty() {
         return Err(MintError::Config(
             "a non-empty module_key is required (usage: fsrt mint-fct <module_key>)".to_string(),
@@ -54,7 +52,6 @@ pub fn run_mint_fct(
 
     let mut manifest_ctx = extract_manifest_context(&manifest, module_key)?;
 
-    // Diagnostics go to stderr (via tracing); only the JWT is written to stdout.
     info!(
         product = %config.product,
         app_id = %manifest_ctx.app_id,
@@ -90,7 +87,6 @@ mod tests {
 
     #[test]
     fn run_mint_fct_rejects_empty_module_key() {
-        // Module key is required, fails fast.
         for key in ["", "   "] {
             let err = run_mint_fct(Path::new("."), Path::new("./nope.toml"), key, true)
                 .unwrap_err();

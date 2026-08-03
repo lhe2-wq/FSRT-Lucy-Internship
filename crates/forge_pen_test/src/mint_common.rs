@@ -116,9 +116,6 @@ pub struct MintFctConfig {
     // Atlassian site subdomain where GraphQL gateway URL is derived.
     pub site_id: String,
 
-    // Optional: override the default FCT GraphQL mutation.
-    pub mutation: Option<String>,
-
     // Auth credentials — how to authenticate the HTTP request.
     pub auth: AuthConfig,
 
@@ -130,34 +127,50 @@ pub struct MintFctConfig {
     pub module_key: Option<String>,
     // Forge environment slot used to look up
     pub environment_key: Option<String>,
-
-    // The GraphQL variables template.
-    pub variables: Option<JsonValue>,
 }
 
 impl MintFctConfig {
-    // Derives the Atlassian GraphQL gateway URL from `site_id`.
     pub fn graphql_endpoint(&self) -> String {
         format!(
             "https://{}.atlassian.net/gateway/api/graphql",
             self.site_id
         )
     }
+
+    // Validates that fields required are present and non-empty.
+    pub fn validate(&self) -> Result<()> {
+        let mut missing = Vec::new();
+
+        if self.site_id.trim().is_empty() {
+            missing.push("site_id");
+        }
+        if self.cloud_id.as_deref().unwrap_or("").trim().is_empty() {
+            missing.push("cloud_id");
+        }
+        if self.installation_id.as_deref().unwrap_or("").trim().is_empty() {
+            missing.push("installation_id");
+        }
+
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(MintError::Config(format!(
+                "missing required config field(s): {}. Set them in the fsrt-remote.toml config file",
+                missing.join(", ")
+            )))
+        }
+    }
 }
 
-// `auth` section of the config, either session cookie or API token
 #[derive(Debug, Deserialize, Serialize)]
 pub struct AuthConfig {
-    // Config key is `type`, renamed
     #[serde(rename = "type", default = "default_auth_type")]
     pub auth_type: String,
 
-    // The full Cookie header value, either inline or from a file.
     pub raw_cookie: Option<String>,
     pub raw_cookie_file: Option<String>,
 
     pub email: Option<String>,
-    // API token is a secret — read from inline value or a file.
     pub api_token: Option<String>,
     pub api_token_file: Option<String>,
 }
@@ -293,8 +306,6 @@ pub fn load_secret_from_config(
     Ok(None)
 }
 
-// Reads the `auth:` section of the config and returns the HTTP headers needed
-// to authenticate the request.
 pub fn build_auth_headers(auth: &AuthConfig) -> Result<HashMap<String, String>> {
     let mut headers = HashMap::new();
 
@@ -405,7 +416,6 @@ fn format_duration(seconds: i64) -> String {
     }
 }
 
-// Definitive expiry check used to hard-fail before sending a stale cookie.
 fn cookie_expired_secs_ago(raw_cookie: &str) -> Option<i64> {
     let token = extract_session_token(raw_cookie)?;
     let exp = decode_jwt_exp(token)?;
@@ -455,8 +465,7 @@ pub fn check_cookie_expiry(raw_cookie: &str) -> bool {
     }
 }
 
-// Walks a JSON value tree and replaces every "${dotted.path}" placeholder
-// with the value found at that path in the template context.
+// Replaces placeholders in JSON value tree.
 pub fn render_template(value: &JsonValue, context: &JsonValue) -> JsonValue {
     match value {
         JsonValue::Object(map) => {
@@ -477,16 +486,13 @@ pub fn render_template(value: &JsonValue, context: &JsonValue) -> JsonValue {
 fn render_string(s: &str, context: &JsonValue) -> JsonValue {
     let re = Regex::new(r"\$\{([^}]+)\}").unwrap();
 
-    // If the entire string is a single placeholder, return the resolved value
-    // preserving its original type
     if let Some(caps) = re.captures(s)
         && caps[0] == *s
     {
         let path = &caps[1];
         return get_path(context, path).cloned().unwrap_or(JsonValue::Null);
     }
-
-    // Otherwise replace each placeholder with its string representation.
+    
     let result = re.replace_all(s, |caps: &regex::Captures<'_>| {
         let path = &caps[1];
         match get_path(context, path) {
@@ -507,8 +513,9 @@ pub fn get_path<'a>(context: &'a JsonValue, path: &str) -> Option<&'a JsonValue>
     Some(cur)
 }
 
-// Sends a GraphQL POST request to the Atlassian gateway and returns
-// (http_status_code, response_body_text) using ureq.
+// Overall HTTP timeout for GraphQL gateway calls, so a hung server can't block the CLI.
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 pub fn post_graphql(
     endpoint: &str,
     operation_name: &str,
@@ -516,10 +523,9 @@ pub fn post_graphql(
     query: &str,
     variables: &JsonValue,
 ) -> Result<(u16, String)> {
-    // Extract origin from the endpoint URL for CSRF headers.
     let origin = endpoint.split('/').take(3).collect::<Vec<_>>().join("/");
 
-    let url = format!("{}?q={}", endpoint, operation_name);
+    let url = endpoint.to_string();
 
     let body = serde_json::json!({
         "operationName": operation_name,
@@ -527,20 +533,7 @@ pub fn post_graphql(
         "variables": variables,
     });
 
-    // Build the ureq POST request.
-    let mut request = ureq::post(&url)
-        .set("Content-Type", "application/json")
-        .set("Accept", "application/json")
-        .set("Origin", &origin)
-        .set("Referer", &format!("{}/", origin))
-        .set("X-Experimentalapi", "confluence-agg-beta")
-        .set("X-Apollo-Operation-Name", operation_name)
-        .set(
-            "User-Agent",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
-             AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
-        );
-
+    let mut request = ureq::post(&url).timeout(REQUEST_TIMEOUT).set("Origin", &origin);
     for (name, value) in auth_headers {
         request = request.set(name, value);
     }
@@ -563,8 +556,6 @@ pub fn post_graphql(
     }
 }
 
-// Loads and deserialises the `fsrt-remote.toml` config file into a
-// `MintFctConfig` using the `config` crate (config-rs).
 pub fn load_config(config_path: &std::path::Path) -> Result<MintFctConfig> {
     if !config_path.exists() {
         return Err(MintError::Config(format!(
@@ -578,10 +569,10 @@ pub fn load_config(config_path: &std::path::Path) -> Result<MintFctConfig> {
         .build()?;
 
     let cfg: MintFctConfig = settings.try_deserialize()?;
+    cfg.validate()?;
     Ok(cfg)
 }
 
-// Resolve app's environmentId and versionId.
 pub const PRODUCTION_ENVIRONMENT_KEY: &str = "production";
 pub const DEFAULT_ENVIRONMENT_KEY: &str = "default";
 
@@ -601,14 +592,12 @@ pub const APP_ENVIRONMENT_QUERY: &str = r#"query GetAppEnvironment($appId: ID!, 
 }"#;
 pub const APP_ENVIRONMENT_OPERATION_NAME: &str = "GetAppEnvironment";
 
-// Result of the environment lookup.
 #[derive(Debug, Clone)]
 pub struct AppEnvironment {
     pub environment_id: String,
     pub app_version: Option<String>,
 }
 
-// Performs the GraphQL query and parses out the environment id + version.
 pub fn fetch_app_environment(
     endpoint: &str,
     auth_headers: &HashMap<String, String>,
@@ -672,7 +661,6 @@ pub fn fetch_app_environment(
     })
 }
 
-// High-level, opt-in resolver used by both subcommands.
 pub fn resolve_environment(
     config: &MintFctConfig,
     manifest_ctx: &mut ManifestContext,
@@ -689,7 +677,6 @@ pub fn resolve_environment(
         Some(key) => {
             fetch_app_environment(&endpoint, auth_headers, &manifest_ctx.app_id, &key)?
         }
-        // No key configured: prefer "production", then fall back to "default".
         None => {
             match fetch_app_environment(
                 &endpoint,
@@ -720,7 +707,6 @@ pub fn resolve_environment(
     Ok(())
 }
 
-// Reads the manifest.yml (or .yaml) from an app directory.
 pub fn load_manifest(app_dir: &Path) -> Result<String> {
     let mut manifest_path = app_dir.join("manifest.yaml");
     if !manifest_path.exists() {
@@ -736,7 +722,6 @@ pub fn load_manifest(app_dir: &Path) -> Result<String> {
     Ok(fs::read_to_string(&manifest_path)?)
 }
 
-// Builds the final FCT GraphQL variables.
 pub fn build_variables(
     config: &MintFctConfig,
     manifest_ctx: &ManifestContext,
@@ -744,7 +729,6 @@ pub fn build_variables(
     let config_value =
         serde_json::to_value(config).unwrap_or(JsonValue::Object(Default::default()));
 
-    // Resolve the product-correct site context ARI for the global-app shape.
     let cloud_id = config.cloud_id.as_deref().unwrap_or("");
     let context_ari = manifest_ctx.product.context_ari(cloud_id);
 
@@ -762,50 +746,46 @@ pub fn build_variables(
         "context_ari": context_ari,
     });
 
-    let template: JsonValue = if let Some(vars) = &config.variables {
-        vars.clone()
-    } else {
-        match config.product {
-            Product::Confluence => serde_json::json!({
-                "cloudId": "${config.cloud_id}",
-                "input": {
-                    // Product-resolved at runtime from the manifest.
-                    "contextIds": ["${context_ari}"],
-                    "extensionSpecificContexts": {
-                        "appVersion": "${manifest.app_version}",
-                        "extensionId": "ari:cloud:ecosystem::extension/${manifest.app_id_bare}/${manifest.environment_id}/static/${manifest.module_key}",
-                        "extensionType": "xen:macro",
-                        "installationId": "${config.installation_id}",
-                        "context": {
-                            "moduleKey": "${manifest.module_key}",
-                            "type": "${manifest.module_type}",
-                            "environmentId": "${manifest.environment_id}",
-                            "extension": { "type": "${manifest.module_type}" }
-                        }
+    let template: JsonValue = match config.product {
+        Product::Confluence => serde_json::json!({
+            "cloudId": "${config.cloud_id}",
+            "input": {
+                // Product-resolved at runtime from the manifest.
+                "contextIds": ["${context_ari}"],
+                "extensionSpecificContexts": {
+                    "appVersion": "${manifest.app_version}",
+                    "extensionId": "ari:cloud:ecosystem::extension/${manifest.app_id_bare}/${manifest.environment_id}/static/${manifest.module_key}",
+                    "extensionType": "xen:macro",
+                    "installationId": "${config.installation_id}",
+                    "context": {
+                        "moduleKey": "${manifest.module_key}",
+                        "type": "${manifest.module_type}",
+                        "environmentId": "${manifest.environment_id}",
+                        "extension": { "type": "${manifest.module_type}" }
                     }
                 }
-            }),
-            Product::Global => serde_json::json!({
-                "input": {
-                    // Product-resolved at runtime from the manifest.
-                    "contextIds": ["${context_ari}"],
-                    "unlicensed": false,
-                    "extensionContexts": [{
-                        "appVersion": "${manifest.app_version}",
-                        "extensionId": "ari:cloud:ecosystem::extension/${manifest.app_id_bare}/${manifest.environment_id}/static/${manifest.module_key}",
-                        "extensionType": "xen:${manifest.module_type}",
-                        "installationId": "${config.installation_id}",
-                        "context": {
-                            "moduleKey": "${manifest.module_key}",
-                            "cloudId": "${config.cloud_id}",
-                            "environmentId": "${manifest.environment_id}",
-                            "type": "${manifest.module_type}",
-                            "extension": { "type": "${manifest.module_type}" }
-                        }
-                    }]
-                }
-            }),
-        }
+            }
+        }),
+        Product::Global => serde_json::json!({
+            "input": {
+                // Product-resolved at runtime from the manifest.
+                "contextIds": ["${context_ari}"],
+                "unlicensed": false,
+                "extensionContexts": [{
+                    "appVersion": "${manifest.app_version}",
+                    "extensionId": "ari:cloud:ecosystem::extension/${manifest.app_id_bare}/${manifest.environment_id}/static/${manifest.module_key}",
+                    "extensionType": "xen:${manifest.module_type}",
+                    "installationId": "${config.installation_id}",
+                    "context": {
+                        "moduleKey": "${manifest.module_key}",
+                        "cloudId": "${config.cloud_id}",
+                        "environmentId": "${manifest.environment_id}",
+                        "type": "${manifest.module_type}",
+                        "extension": { "type": "${manifest.module_type}" }
+                    }
+                }]
+            }
+        }),
     };
 
     let rendered = render_template(&template, &context);
@@ -819,8 +799,6 @@ pub fn build_variables(
     Ok(rendered)
 }
 
-// Takes a fully-prepared config, manifest context, and auth headers, and
-// returns the FCT JWT string on success.
 pub fn mint_fct_jwt(
     config: &MintFctConfig,
     manifest_ctx: &ManifestContext,
@@ -836,7 +814,7 @@ pub fn mint_fct_jwt_opts(
     auth_headers: &HashMap<String, String>,
     quiet: bool,
 ) -> Result<String> {
-    let (default_mutation, operation_name, response_key) = match config.product {
+    let (query, operation_name, response_key) = match config.product {
         Product::Confluence => (
             DEFAULT_CONFLUENCE_MUTATION,
             CONFLUENCE_OPERATION_NAME,
@@ -848,8 +826,6 @@ pub fn mint_fct_jwt_opts(
             "globalApp_signForgeContextTokens",
         ),
     };
-
-    let query = config.mutation.as_deref().unwrap_or(default_mutation);
 
     let variables = build_variables(config, manifest_ctx)?;
 
@@ -906,7 +882,6 @@ pub fn mint_fct_jwt_opts(
         }));
     }
 
-    // Extract the JWT string — path differs by product
     let jwt = match config.product {
         Product::Confluence => fct_obj
             .and_then(|o| o.get("forgeContextToken"))
@@ -1093,7 +1068,6 @@ mod tests {
         MintFctConfig {
             product: Product::Global,
             site_id: "example".to_string(),
-            mutation: None,
             auth: AuthConfig {
                 auth_type: default_auth_type(),
                 raw_cookie: Some("x".to_string()),
@@ -1108,8 +1082,21 @@ mod tests {
             environment_type: None,
             module_key: None,
             environment_key: None,
-            variables: None,
         }
+    }
+
+    #[test]
+    fn validate_flags_missing_required_fields() {
+        // Complete config passes.
+        assert!(global_config("cid").validate().is_ok());
+
+        // Missing cloud_id and installation_id are both reported.
+        let mut cfg = global_config("cid");
+        cfg.cloud_id = None;
+        cfg.installation_id = Some("  ".to_string()); // whitespace counts as missing
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("cloud_id"), "got: {err}");
+        assert!(err.contains("installation_id"), "got: {err}");
     }
 
     #[test]

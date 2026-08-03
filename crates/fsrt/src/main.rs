@@ -866,9 +866,6 @@ pub(crate) fn scan_directory<'a>(
 fn main() -> Result<()> {
     let mut args = Args::parse();
 
-    // `--verbose` (or `--dry-run`) on a mint subcommand raises the default log
-    // level to `info` so diagnostics surface, but an explicit FORGE_LOG always
-    // takes precedence.
     let verbose = matches!(
         &args.command,
         Some(Command::MintFct(a)) if a.verbose || a.dry_run
@@ -883,8 +880,6 @@ fn main() -> Result<()> {
         .with(env_filter)
         .init();
 
-    // Route subcommands before the default scan. `fsrt mint-fct <MODULE_KEY>`
-    // mints a Forge Context Token instead of scanning.
     if let Some(Command::MintFct(mint_args)) = &args.command {
         match forge_pen_test::run_mint_fct(
             &mint_args.app_dir,
@@ -893,7 +888,7 @@ fn main() -> Result<()> {
             mint_args.dry_run,
         ) {
             Ok(Some(jwt)) => println!("{jwt}"),
-            Ok(None) => {} // dry run: variables already printed by run_mint_fct
+            Ok(None) => {} // dry run
             Err(err) => {
                 eprintln!("error: {err}");
                 std::process::exit(1);

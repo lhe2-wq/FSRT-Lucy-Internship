@@ -975,9 +975,7 @@ impl<'a> ForgeModules<'a> {
 }
 
 impl ForgeModules<'_> {
-    /// Resolves a caller-supplied `module_key` to its FCT `module_type` and the
-    /// manifest product-namespace prefix that declared it, or `None` if the key matches no
-    /// FCT-capable module.
+    /// Resolves a caller-supplied `module_key` to its FCT `module_type` or `None`.
     pub fn fct_module_for_key(&self, key: &str) -> Option<(&'static str, &'static str)> {
         // (module_type, product-namespace prefix)
         if self.macros.iter().any(|m| m.common_keys.key == key) {

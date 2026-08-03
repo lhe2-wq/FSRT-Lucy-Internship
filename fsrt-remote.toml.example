@@ -1,7 +1,6 @@
 # Local fsrt-remote.toml — configuration for `fsrt mint-fct`.
 #
-# This file is GITIGNORED because it contains auth material. Do NOT commit it,
-# and never paste it into public tickets, logs, Slack, or chat.
+# This file is GITIGNORED because it contains auth material.
 
 # GraphQL request *shape*: "confluence" or "global".
 product = "global"
@@ -9,9 +8,6 @@ product = "global"
 # Atlassian site subdomain (the "<site>" in <site>.atlassian.net). The GraphQL
 # gateway URL is derived from this automatically.
 site_id = "your-site"
-
-# Optional: override the default FCT GraphQL mutation.
-# mutation = "..."
 
 # --- App/site IDs (apply to any product) -------------------------------------
 cloud_id        = "00000000-0000-0000-0000-000000000000"
