@@ -4,7 +4,7 @@ mod forge_project;
 #[cfg(test)]
 mod test;
 
-use clap::{Parser, ValueHint};
+use clap::{Parser, Subcommand, ValueHint};
 use forge_permission_resolver::{
     permissions_cache::CacheConfig,
     permissions_resolver::{
@@ -102,6 +102,41 @@ pub struct Args {
     /// directory, and that the source code is located in `src/`
     #[arg(name = "DIRS", default_values_os_t = std::env::current_dir(), value_hint = ValueHint::DirPath)]
     dirs: Vec<PathBuf>,
+
+    /// Optional subcommand. When omitted, fsrt runs its default scan over DIRS.
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+/// Top-level subcommands. Mutually exclusive with the default scan.
+#[derive(Subcommand, Debug)]
+pub enum Command {
+    /// Mint a Forge Context Token (FCT) for a manifest module.
+    MintFct(MintFctArgs),
+}
+
+/// Arguments for `fsrt mint-fct <MODULE_KEY>`.
+#[derive(clap::Args, Debug)]
+pub struct MintFctArgs {
+    /// Manifest module key to mint the Forge Context Token for (required).
+    #[arg(name = "MODULE_KEY")]
+    module_key: String,
+
+    /// Forge app directory containing manifest.yml/.yaml.
+    #[arg(long, default_value = ".", value_hint = ValueHint::DirPath)]
+    app_dir: PathBuf,
+
+    /// Path to the fsrt-remote.toml config file.
+    #[arg(long, default_value = "./fsrt-remote.toml", value_hint = ValueHint::FilePath)]
+    config: PathBuf,
+
+    /// Print the rendered GraphQL variables instead of calling the gateway.
+    #[arg(long, default_value_t = false)]
+    dry_run: bool,
+
+    /// Print diagnostic logs to stderr. The FORGE_LOG env var takes precedence.
+    #[arg(long, default_value_t = false)]
+    verbose: bool,
 }
 
 #[allow(dead_code)]
@@ -830,10 +865,39 @@ pub(crate) fn scan_directory<'a>(
 
 fn main() -> Result<()> {
     let mut args = Args::parse();
+
+    // `--verbose` (or `--dry-run`) on a mint subcommand raises the default log
+    // level to `info` so diagnostics surface, but an explicit FORGE_LOG always
+    // takes precedence.
+    let verbose = matches!(
+        &args.command,
+        Some(Command::MintFct(a)) if a.verbose || a.dry_run
+    );
+    let env_filter = match EnvFilter::try_from_env("FORGE_LOG") {
+        Ok(filter) => filter,
+        Err(_) if verbose => EnvFilter::new("info"),
+        Err(_) => EnvFilter::new(""),
+    };
     tracing_subscriber::registry()
         .with(HierarchicalLayer::new(2))
-        .with(EnvFilter::from_env("FORGE_LOG"))
+        .with(env_filter)
         .init();
+
+    // Route subcommands before the default scan. `fsrt mint-fct <MODULE_KEY>`
+    // mints a Forge Context Token instead of scanning.
+    if let Some(Command::MintFct(mint_args)) = &args.command {
+        match forge_pen_test::run_mint_fct(
+            &mint_args.app_dir,
+            &mint_args.config,
+            &mint_args.module_key,
+            mint_args.dry_run,
+        )? {
+            Some(jwt) => println!("{jwt}"),
+            None => {} // dry run: variables already printed by run_mint_fct
+        }
+        return Ok(());
+    }
+
     let dirs = std::mem::take(&mut args.dirs);
 
     let secretdata_file = include_str!("../../../secretdata.yaml");

@@ -1,9 +1,13 @@
 //! Forge pen-testing toolkit.
 
 mod mint_common;
+mod mint_fct;
 
 // Errors + result alias.
 pub use mint_common::{MintError, Result};
+
+// Capability entry points (called by the `fsrt` CLI).
+pub use mint_fct::run_mint_fct;
 
 // Config model (deserialised from `fsrt-remote.toml`) + product selector.
 pub use mint_common::{
