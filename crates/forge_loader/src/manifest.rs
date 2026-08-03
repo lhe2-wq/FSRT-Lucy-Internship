@@ -975,22 +975,38 @@ impl<'a> ForgeModules<'a> {
 }
 
 impl ForgeModules<'_> {
-    /// Returns the FCT `module_type` string for a caller-supplied `module_key`, or `None`.
-    pub fn fct_module_type_for_key(&self, key: &str) -> Option<&'static str> {
+    /// Resolves a caller-supplied `module_key` to its FCT `module_type` and the
+    /// manifest product-namespace prefix that declared it, or `None` if the key matches no
+    /// FCT-capable module.
+    pub fn fct_module_for_key(&self, key: &str) -> Option<(&'static str, &'static str)> {
+        // (module_type, product-namespace prefix)
         if self.macros.iter().any(|m| m.common_keys.key == key) {
-            Some("macro")
-        } else if self.confluence_global_page.iter().any(|m| m.key == key)
-            || self.jira_global_page.iter().any(|m| m.key == key)
+            return Some(("macro", "confluence"));
+        }
+        if self.confluence_global_page.iter().any(|m| m.key == key) {
+            return Some(("globalPage", "confluence"));
+        }
+        if self.space_page.iter().any(|m| m.key == key) {
+            return Some(("spacePage", "confluence"));
+        }
+        if self.jira_global_page.iter().any(|m| m.key == key)
             || self.project_page.iter().any(|m| m.key == key)
         {
-            Some("globalPage")
-        } else if self.space_page.iter().any(|m| m.key == key) {
-            Some("spacePage")
-        } else if self.issue_panel.iter().any(|m| m.key == key) {
-            Some("issuePanel")
-        } else {
-            None
+            return Some(("globalPage", "jira"));
         }
+        if self.issue_panel.iter().any(|m| m.key == key) {
+            return Some(("issuePanel", "jira"));
+        }
+        if self.queue_page.iter().any(|m| m.key == key) {
+            return Some(("queuePage", "jiraServiceManagement"));
+        }
+        None
+        // TODO: add more module types (ex. Bitbucket, Rovo, etc.)
+    }
+
+    /// Returns the FCT `module_type` string for a caller-supplied `module_key`, or `None`.
+    pub fn fct_module_type_for_key(&self, key: &str) -> Option<&'static str> {
+        self.fct_module_for_key(key).map(|(module_type, _)| module_type)
     }
 }
 

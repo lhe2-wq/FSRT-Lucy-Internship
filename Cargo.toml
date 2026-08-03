@@ -9,7 +9,9 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
+base64 = "0.22"
 clap = { version = "4.5.4", features = ["derive", "wrap_help"] }
+config = { version = "0.15", default-features = false, features = ["toml"] }
 itertools = "0.14.0"
 num-bigint = { version = "0.4.4" }
 serde = { version = "1.0.197", features = ["derive"] }
@@ -31,8 +33,10 @@ tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 tracing-tree = "0.4.0"
 typed-index-collections = "3.1.0"
+ureq = { version = "2", features = ["json"] }
 walkdir = "2.5.0"
 forge_loader = { path = "crates/forge_loader" }
+forge_pen_test = { path = "crates/forge_pen_test" }
 forge_analyzer = { path = "crates/forge_analyzer" }
 forge_file_resolver = { path = "crates/forge_file_resolver" }
 forge_utils = { path = "crates/forge_utils" }
