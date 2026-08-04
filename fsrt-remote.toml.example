@@ -6,12 +6,12 @@
 # Set to to force a shape for a supported module:
 # product = "global"   # or "confluence"
 
-# Atlassian site subdomain (the "<site>" in <site>.atlassian.net). The GraphQL
-# gateway URL is derived from this automatically.
-site_id = "your-site"
+# Site domain — the full host, e.g. "your-site.atlassian.net".
+# The GraphQL gateway URL is derived from this automatically.
+site_domain = "your-site.domain.net"
 
 # --- App/site IDs (apply to any product) -------------------------------------
-cloud_id        = "00000000-0000-0000-0000-000000000000"
+# cloud_id is omitted, derived automatically from site_domain via tenant-info endpoint
 installation_id = "00000000-0000-0000-0000-000000000000"
 # environment_key = "production"
 

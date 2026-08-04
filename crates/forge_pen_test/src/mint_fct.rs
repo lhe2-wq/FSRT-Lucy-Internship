@@ -37,7 +37,11 @@ pub fn run_mint_fct(
         ));
     }
 
-    let config = load_config(config_path)?;
+    let mut config = load_config(config_path)?;
+
+    // Derive `cloud_id` from `site_domain` (via `_edge/tenant_info`) when it is
+    // not set explicitly in the config.
+    config.resolve_cloud_id()?;
 
     let manifest_text = load_manifest(app_dir)?;
     let manifest: ForgeManifest<'_> = serde_yaml::from_str(&manifest_text)?;

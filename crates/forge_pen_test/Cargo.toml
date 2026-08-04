@@ -21,3 +21,4 @@ serde_yaml.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 ureq.workspace = true
+url.workspace = true

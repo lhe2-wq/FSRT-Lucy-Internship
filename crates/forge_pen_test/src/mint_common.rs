@@ -1,5 +1,6 @@
 //! Shared minting foundation used across the pen-testing capabilities.
-//!   - Config structs (deserialised from the `fsrt-remote.toml` config file)
+//!   - Config structs: `FsrtRemoteConfig` (deserialised from `fsrt-remote.toml`)
+//!     is converted into the runtime `MintFctConfig`
 //!   - Auth header construction
 //!   - GraphQL HTTP POST via `ureq`
 //!   - Template rendering
@@ -108,50 +109,43 @@ impl std::fmt::Display for Product {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct MintFctConfig {
+/// File-facing configuration, deserialised directly from `fsrt-remote.toml`.
+/// Convert into the runtime [`MintFctConfig`] via `From`/`Into`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FsrtRemoteConfig {
     // Optional override for the GraphQL request *shape* (Confluence vs Global).
     #[serde(default)]
     pub product: Option<Product>,
 
-    // Atlassian site subdomain where GraphQL gateway URL is derived.
-    pub site_id: String,
+    // Atlassian site domain (the full host, e.g. "your-site.atlassian.net")
+    // from which the GraphQL gateway and tenant-info URLs are derived.
+    pub site_domain: String,
 
     // Auth credentials — how to authenticate the HTTP request.
     pub auth: AuthConfig,
 
-    // App/site IDs (top-level; formerly the `[global]` section).
-    pub cloud_id: Option<String>,
-    pub installation_id: Option<String>,
+    // App/site IDs.
+    pub installation_id: String, // required for now but will be changed in future pr
     pub environment_id: Option<String>,
     pub environment_type: Option<String>,
-    pub module_key: Option<String>,
-    // Forge environment slot used to look up
+    // Forge environment slot used to look up the environment id.
     pub environment_key: Option<String>,
 }
 
-impl MintFctConfig {
-    pub fn graphql_endpoint(&self) -> String {
-        format!("https://{}.atlassian.net/gateway/api/graphql", self.site_id)
-    }
-
-    // Validates that fields required are present and non-empty.
+impl FsrtRemoteConfig {
+    // Validates that user-supplied required fields are present and non-empty.
     pub fn validate(&self) -> Result<()> {
         let mut missing = Vec::new();
 
-        if self.site_id.trim().is_empty() {
-            missing.push("site_id");
+        if self.site_domain.trim().is_empty() {
+            missing.push("site_domain");
+        } else {
+            parse_site_domain(&self.site_domain)?;
         }
-        if self.cloud_id.as_deref().unwrap_or("").trim().is_empty() {
-            missing.push("cloud_id");
-        }
-        if self
-            .installation_id
-            .as_deref()
-            .unwrap_or("")
-            .trim()
-            .is_empty()
-        {
+        // serde guarantees the key exists (installation_id is a required String),
+        // so this only needs to reject an empty / whitespace-only value.
+        if self.installation_id.trim().is_empty() {
             missing.push("installation_id");
         }
 
@@ -163,6 +157,116 @@ impl MintFctConfig {
                 missing.join(", ")
             )))
         }
+    }
+}
+
+/// Runtime minting configuration, built from validated [`FsrtRemoteConfig`].
+#[derive(Debug, Serialize)]
+pub struct MintFctConfig {
+    // Request-shape override, carried over from the file config.
+    pub product: Option<Product>,
+
+    // Site domain (the full host, e.g. "your-site.atlassian.net").
+    pub site_domain: String,
+
+    // Auth credentials — how to authenticate the HTTP request.
+    pub auth: AuthConfig,
+
+    // Derived at runtime (never from the config file) via `resolve_cloud_id`.
+    pub cloud_id: Option<String>,
+
+    // App/site IDs and environment selectors, carried over from the file config.
+    pub installation_id: String,
+    pub environment_id: Option<String>,
+    pub environment_type: Option<String>,
+    pub environment_key: Option<String>,
+}
+
+impl TryFrom<FsrtRemoteConfig> for MintFctConfig {
+    type Error = MintError;
+
+    // Maps the file-facing config onto the runtime config.
+    fn try_from(file: FsrtRemoteConfig) -> Result<Self> {
+        let site_domain = parse_site_domain(&file.site_domain)?;
+        Ok(MintFctConfig {
+            product: file.product,
+            site_domain,
+            auth: file.auth,
+            cloud_id: None,
+            installation_id: file.installation_id,
+            environment_id: file.environment_id,
+            environment_type: file.environment_type,
+            environment_key: file.environment_key,
+        })
+    }
+}
+
+fn parse_site_domain(raw: &str) -> Result<String> {
+    let trimmed = raw.trim();
+    let candidate = if trimmed.contains("://") {
+        trimmed.to_string()
+    } else {
+        format!("https://{trimmed}")
+    };
+    let parsed = url::Url::parse(&candidate)
+        .map_err(|error| MintError::Config(format!("invalid site_domain '{trimmed}': {error}")))?;
+
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(MintError::Config(format!(
+            "invalid site_domain '{trimmed}': only http and https URLs are supported"
+        )));
+    }
+    if parsed.host().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || !matches!(parsed.path(), "" | "/")
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err(MintError::Config(format!(
+            "invalid site_domain '{trimmed}': expected a host without credentials, path, query, or fragment"
+        )));
+    }
+
+    let mut authority = parsed
+        .host()
+        .expect("host presence checked above")
+        .to_string();
+    if let Some(port) = parsed.port() {
+        authority.push(':');
+        authority.push_str(&port.to_string());
+    }
+    Ok(authority)
+}
+
+impl MintFctConfig {
+    // `site_domain` is parsed and normalised while loading the config.
+    fn host(&self) -> &str {
+        &self.site_domain
+    }
+
+    pub fn graphql_endpoint(&self) -> String {
+        format!("https://{}/gateway/api/graphql", self.host())
+    }
+
+    // The public tenant-info endpoint for this site, used to derive `cloud_id`.
+    pub fn tenant_info_endpoint(&self) -> String {
+        format!("https://{}/_edge/tenant_info", self.host())
+    }
+
+    // Populates `cloud_id` by deriving it from `site_domain` via the public
+    // `_edge/tenant_info` endpoint.
+    pub fn resolve_cloud_id(&mut self) -> Result<()> {
+        if self.cloud_id.as_deref().unwrap_or("").trim().is_empty() {
+            let cloud_id = fetch_cloud_id(&self.tenant_info_endpoint())?;
+            info!(
+                site_domain = %self.site_domain,
+                cloud_id = %cloud_id,
+                "derived cloud_id from site_domain via _edge/tenant_info"
+            );
+            self.cloud_id = Some(cloud_id);
+        }
+        Ok(())
     }
 }
 
@@ -537,6 +641,46 @@ pub fn get_path<'a>(context: &'a JsonValue, path: &str) -> Option<&'a JsonValue>
 // Overall HTTP timeout for GraphQL gateway calls, so a hung server can't block the CLI.
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+// Fetches the site's `cloudId` from the public `_edge/tenant_info` endpoint.
+pub fn fetch_cloud_id(tenant_info_endpoint: &str) -> Result<String> {
+    let response = match ureq::get(tenant_info_endpoint)
+        .timeout(REQUEST_TIMEOUT)
+        .call()
+    {
+        Ok(response) => response,
+        Err(ureq::Error::Status(code, response)) => {
+            let text = response
+                .into_string()
+                .unwrap_or_else(|_| "<unreadable response body>".to_string());
+            return Err(MintError::Config(format!(
+                "failed to derive cloud_id: {tenant_info_endpoint} returned HTTP {code}. \
+                 Check that `site_domain` is correct and reachable.\n\
+                 Response body: {text}"
+            )));
+        }
+        Err(e) => return Err(MintError::Http(e.to_string())),
+    };
+
+    let body = response
+        .into_string()
+        .map_err(|e| MintError::Http(e.to_string()))?;
+
+    let parsed: JsonValue = serde_json::from_str(&body).map_err(MintError::Json)?;
+
+    parsed
+        .get("cloudId")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| {
+            MintError::Config(format!(
+                "failed to derive cloud_id: no `cloudId` field in response from \
+                 {tenant_info_endpoint}. Check that `site_domain` is correct.\n\
+                 Response body: {body}"
+            ))
+        })
+}
+
 pub fn post_graphql(
     endpoint: &str,
     operation_name: &str,
@@ -591,9 +735,11 @@ pub fn load_config(config_path: &std::path::Path) -> Result<MintFctConfig> {
         .add_source(config::File::from(config_path))
         .build()?;
 
-    let cfg: MintFctConfig = settings.try_deserialize()?;
-    cfg.validate()?;
-    Ok(cfg)
+    // Deserialise the file-facing struct, validate user input, then convert to
+    // the runtime config.
+    let file_cfg: FsrtRemoteConfig = settings.try_deserialize()?;
+    file_cfg.validate()?;
+    MintFctConfig::try_from(file_cfg)
 }
 
 pub const PRODUCTION_ENVIRONMENT_KEY: &str = "production";
@@ -776,7 +922,7 @@ pub fn build_variables(
                 "extensionSpecificContexts": {
                     "appVersion": "${manifest.app_version}",
                     "extensionId": "ari:cloud:ecosystem::extension/${manifest.app_id_bare}/${manifest.environment_id}/static/${manifest.module_key}",
-                    "extensionType": "xen:macro",
+                    "extensionType": "xen:macro", // manifest.module_type
                     "installationId": "${config.installation_id}",
                     "context": {
                         "moduleKey": "${manifest.module_key}",
@@ -1096,7 +1242,7 @@ mod tests {
         MintFctConfig {
             // No override — shape auto-resolves from the manifest product.
             product: None,
-            site_id: "example".to_string(),
+            site_domain: "example.atlassian.net".to_string(),
             auth: AuthConfig {
                 auth_type: default_auth_type(),
                 raw_cookie: Some("x".to_string()),
@@ -1106,10 +1252,9 @@ mod tests {
                 api_token_file: None,
             },
             cloud_id: Some(cloud_id.to_string()),
-            installation_id: Some("inst-1".to_string()),
+            installation_id: "inst-1".to_string(),
             environment_id: None,
             environment_type: None,
-            module_key: None,
             environment_key: None,
         }
     }
@@ -1121,27 +1266,165 @@ mod tests {
         cfg
     }
 
-    #[test]
-    fn validate_flags_missing_required_fields() {
-        // Complete config passes.
-        assert!(global_config("cid").validate().is_ok());
-
-        // Missing cloud_id and installation_id are both reported.
-        let mut cfg = global_config("cid");
-        cfg.cloud_id = None;
-        cfg.installation_id = Some("  ".to_string()); // whitespace counts as missing
-        let err = cfg.validate().unwrap_err().to_string();
-        assert!(err.contains("cloud_id"), "got: {err}");
-        assert!(err.contains("installation_id"), "got: {err}");
+    // Builds a minimal, valid file-facing config (as if parsed from TOML).
+    fn file_config() -> FsrtRemoteConfig {
+        FsrtRemoteConfig {
+            product: None,
+            site_domain: "example.atlassian.net".to_string(),
+            auth: AuthConfig {
+                auth_type: default_auth_type(),
+                raw_cookie: Some("x".to_string()),
+                raw_cookie_file: None,
+                email: None,
+                api_token: None,
+                api_token_file: None,
+            },
+            installation_id: "inst-1".to_string(),
+            environment_id: None,
+            environment_type: None,
+            environment_key: None,
+        }
     }
 
     #[test]
-    fn graphql_endpoint_is_derived_from_site_id() {
+    fn validate_flags_missing_required_fields() {
+        // Complete file config passes.
+        assert!(file_config().validate().is_ok());
+
+        // Empty / whitespace-only installation_id is reported.
+        let mut cfg = file_config();
+        cfg.installation_id = "  ".to_string(); // whitespace counts as missing
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("installation_id"), "got: {err}");
+
+        // Missing site_domain is reported.
+        let mut cfg = file_config();
+        cfg.site_domain = "   ".to_string();
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("site_domain"), "got: {err}");
+    }
+
+    #[test]
+    fn from_file_config_leaves_cloud_id_unset() {
+        // Conversion must carry over user fields and leave cloud_id for runtime
+        // derivation (never sourced from the file).
+        let cfg = MintFctConfig::try_from(file_config()).unwrap();
+        assert_eq!(cfg.cloud_id, None);
+        assert_eq!(cfg.site_domain, "example.atlassian.net");
+        assert_eq!(cfg.installation_id, "inst-1");
+    }
+
+    #[test]
+    fn resolve_cloud_id_is_idempotent_once_set() {
+        // Once cloud_id is populated, resolve_cloud_id() is a no-op and makes no
+        // network call (a real fetch would require a reachable site).
+        let mut cfg = global_config("cid");
+        cfg.cloud_id = Some("already-derived".to_string());
+        cfg.resolve_cloud_id().unwrap();
+        assert_eq!(cfg.cloud_id.as_deref(), Some("already-derived"));
+    }
+
+    #[test]
+    fn config_file_rejects_cloud_id() {
+        // cloud_id is derived at runtime and is not accepted in file config.
+        let toml = r#"
+site_domain = "example.atlassian.net"
+cloud_id = "should-be-ignored"
+installation_id = "inst-123"
+
+[auth]
+type = "raw_cookie"
+raw_cookie = "tenant.session.token=a.b.c"
+"#;
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("tmp_rovo_fsrt_cfg_{}.toml", std::process::id()));
+        std::fs::write(&path, toml).unwrap();
+
+        let cfg = load_config(&path);
+        let _ = std::fs::remove_file(&path); // best-effort cleanup
+
+        let err = cfg.unwrap_err().to_string();
+        assert!(err.contains("cloud_id"), "got: {err}");
+    }
+
+    #[test]
+    fn config_file_rejects_module_key() {
+        let err = config::Config::builder()
+            .add_source(config::File::from_str(
+                r#"
+site_domain = "example.atlassian.net"
+installation_id = "inst-123"
+module_key = "manifest-is-the-source-of-truth"
+
+[auth]
+type = "raw_cookie"
+raw_cookie = "tenant.session.token=a.b.c"
+"#,
+                config::FileFormat::Toml,
+            ))
+            .build()
+            .unwrap()
+            .try_deserialize::<FsrtRemoteConfig>()
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("module_key"), "got: {err}");
+    }
+
+    #[test]
+    fn graphql_endpoint_is_derived_from_site_domain() {
         let cfg = global_config("cid");
         assert_eq!(
             cfg.graphql_endpoint(),
             "https://example.atlassian.net/gateway/api/graphql"
         );
+    }
+
+    #[test]
+    fn tenant_info_endpoint_is_derived_from_site_domain() {
+        let cfg = global_config("cid");
+        assert_eq!(
+            cfg.tenant_info_endpoint(),
+            "https://example.atlassian.net/_edge/tenant_info"
+        );
+    }
+
+    #[test]
+    fn site_domain_is_normalised_for_endpoints() {
+        // A scheme and/or trailing slash in site_domain must be tolerated.
+        for raw in [
+            "example.atlassian.net",
+            "https://example.atlassian.net",
+            "https://example.atlassian.net/",
+            "  https://example.atlassian.net/  ",
+            "http://example.atlassian.net",
+        ] {
+            let mut cfg = global_config("cid");
+            cfg.site_domain = parse_site_domain(raw).unwrap();
+            assert_eq!(
+                cfg.graphql_endpoint(),
+                "https://example.atlassian.net/gateway/api/graphql",
+                "graphql endpoint for site_domain={raw:?}"
+            );
+            assert_eq!(
+                cfg.tenant_info_endpoint(),
+                "https://example.atlassian.net/_edge/tenant_info",
+                "tenant_info endpoint for site_domain={raw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn site_domain_rejects_non_host_url_components() {
+        for raw in [
+            "ftp://example.atlassian.net",
+            "https://user@example.atlassian.net",
+            "https://example.atlassian.net/wiki",
+            "https://example.atlassian.net?query=value",
+            "https://example.atlassian.net#fragment",
+        ] {
+            let err = parse_site_domain(raw).unwrap_err().to_string();
+            assert!(err.contains("site_domain"), "input={raw:?}, error={err}");
+        }
     }
 
     fn manifest_ctx_for(product: FctProduct) -> ManifestContext {
