@@ -1004,7 +1004,8 @@ impl ForgeModules<'_> {
 
     /// Returns the FCT `module_type` string for a caller-supplied `module_key`, or `None`.
     pub fn fct_module_type_for_key(&self, key: &str) -> Option<&'static str> {
-        self.fct_module_for_key(key).map(|(module_type, _)| module_type)
+        self.fct_module_for_key(key)
+            .map(|(module_type, _)| module_type)
     }
 
     /// Collects the keys of every FCT-capable module declared in this manifest.

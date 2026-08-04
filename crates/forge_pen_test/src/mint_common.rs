@@ -110,8 +110,9 @@ impl std::fmt::Display for Product {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct MintFctConfig {
-    // Required: which Atlassian product to mint the token for.
-    pub product: Product,
+    // Optional override for the GraphQL request *shape* (Confluence vs Global).
+    #[serde(default)]
+    pub product: Option<Product>,
 
     // Atlassian site subdomain where GraphQL gateway URL is derived.
     pub site_id: String,
@@ -131,10 +132,7 @@ pub struct MintFctConfig {
 
 impl MintFctConfig {
     pub fn graphql_endpoint(&self) -> String {
-        format!(
-            "https://{}.atlassian.net/gateway/api/graphql",
-            self.site_id
-        )
+        format!("https://{}.atlassian.net/gateway/api/graphql", self.site_id)
     }
 
     // Validates that fields required are present and non-empty.
@@ -147,7 +145,13 @@ impl MintFctConfig {
         if self.cloud_id.as_deref().unwrap_or("").trim().is_empty() {
             missing.push("cloud_id");
         }
-        if self.installation_id.as_deref().unwrap_or("").trim().is_empty() {
+        if self
+            .installation_id
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .is_empty()
+        {
             missing.push("installation_id");
         }
 
@@ -180,6 +184,8 @@ fn default_auth_type() -> String {
 }
 
 // The Atlassian product an FCT is being minted for.
+// ASK JOSH: what other products are there, and what is the easiest way to get an ARI?
+// context_ari hardcodes pattern
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FctProduct {
     Confluence,
@@ -215,6 +221,21 @@ impl FctProduct {
     fn context_ari(self, cloud_id: &str) -> String {
         format!("ari:cloud:{}::site/{cloud_id}", self.ari_owner())
     }
+
+    // The GraphQL request *shape* this product uses.
+    fn request_shape(self) -> Product {
+        match self {
+            FctProduct::Confluence => Product::Confluence,
+            FctProduct::Jira | FctProduct::JiraServiceManagement => Product::Global,
+        }
+    }
+}
+
+// Resolves which GraphQL request shape to use for a mint.
+pub(crate) fn resolved_product(config: &MintFctConfig, manifest_ctx: &ManifestContext) -> Product {
+    config
+        .product
+        .unwrap_or_else(|| manifest_ctx.product.request_shape())
 }
 
 // Manifest context
@@ -492,7 +513,7 @@ fn render_string(s: &str, context: &JsonValue) -> JsonValue {
         let path = &caps[1];
         return get_path(context, path).cloned().unwrap_or(JsonValue::Null);
     }
-    
+
     let result = re.replace_all(s, |caps: &regex::Captures<'_>| {
         let path = &caps[1];
         match get_path(context, path) {
@@ -533,7 +554,9 @@ pub fn post_graphql(
         "variables": variables,
     });
 
-    let mut request = ureq::post(&url).timeout(REQUEST_TIMEOUT).set("Origin", &origin);
+    let mut request = ureq::post(&url)
+        .timeout(REQUEST_TIMEOUT)
+        .set("Origin", &origin);
     for (name, value) in auth_headers {
         request = request.set(name, value);
     }
@@ -674,9 +697,7 @@ pub fn resolve_environment(
 
     let endpoint = config.graphql_endpoint();
     let app_env = match env_key {
-        Some(key) => {
-            fetch_app_environment(&endpoint, auth_headers, &manifest_ctx.app_id, &key)?
-        }
+        Some(key) => fetch_app_environment(&endpoint, auth_headers, &manifest_ctx.app_id, &key)?,
         None => {
             match fetch_app_environment(
                 &endpoint,
@@ -746,7 +767,7 @@ pub fn build_variables(
         "context_ari": context_ari,
     });
 
-    let template: JsonValue = match config.product {
+    let template: JsonValue = match resolved_product(config, manifest_ctx) {
         Product::Confluence => serde_json::json!({
             "cloudId": "${config.cloud_id}",
             "input": {
@@ -814,7 +835,8 @@ pub fn mint_fct_jwt_opts(
     auth_headers: &HashMap<String, String>,
     quiet: bool,
 ) -> Result<String> {
-    let (query, operation_name, response_key) = match config.product {
+    let product = resolved_product(config, manifest_ctx);
+    let (query, operation_name, response_key) = match product {
         Product::Confluence => (
             DEFAULT_CONFLUENCE_MUTATION,
             CONFLUENCE_OPERATION_NAME,
@@ -882,7 +904,7 @@ pub fn mint_fct_jwt_opts(
         }));
     }
 
-    let jwt = match config.product {
+    let jwt = match product {
         Product::Confluence => fct_obj
             .and_then(|o| o.get("forgeContextToken"))
             .and_then(|t| t.get("jwt"))
@@ -1050,15 +1072,21 @@ mod tests {
         }"#;
         let manifest: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
         assert_eq!(
-            extract_manifest_context(&manifest, "conf-macro").unwrap().product,
+            extract_manifest_context(&manifest, "conf-macro")
+                .unwrap()
+                .product,
             FctProduct::Confluence
         );
         assert_eq!(
-            extract_manifest_context(&manifest, "jira-page").unwrap().product,
+            extract_manifest_context(&manifest, "jira-page")
+                .unwrap()
+                .product,
             FctProduct::Jira
         );
         assert_eq!(
-            extract_manifest_context(&manifest, "jsm-queue").unwrap().product,
+            extract_manifest_context(&manifest, "jsm-queue")
+                .unwrap()
+                .product,
             FctProduct::JiraServiceManagement
         );
     }
@@ -1066,7 +1094,8 @@ mod tests {
     // Builds a minimal global-app config for build_variables tests.
     fn global_config(cloud_id: &str) -> MintFctConfig {
         MintFctConfig {
-            product: Product::Global,
+            // No override — shape auto-resolves from the manifest product.
+            product: None,
             site_id: "example".to_string(),
             auth: AuthConfig {
                 auth_type: default_auth_type(),
@@ -1083,6 +1112,13 @@ mod tests {
             module_key: None,
             environment_key: None,
         }
+    }
+
+    // Build a config with an explicit product-shape override.
+    fn config_with_product(cloud_id: &str, product: Product) -> MintFctConfig {
+        let mut cfg = global_config(cloud_id);
+        cfg.product = Some(product);
+        cfg
     }
 
     #[test]
@@ -1124,8 +1160,11 @@ mod tests {
     #[test]
     fn build_variables_global_uses_resolved_product_ari() {
         // Jira app -> jira site ARI.
-        let vars = build_variables(&global_config("cloud-jira"), &manifest_ctx_for(FctProduct::Jira))
-            .unwrap();
+        let vars = build_variables(
+            &global_config("cloud-jira"),
+            &manifest_ctx_for(FctProduct::Jira),
+        )
+        .unwrap();
         assert_eq!(
             vars["input"]["contextIds"][0],
             json!("ari:cloud:jira::site/cloud-jira")
@@ -1145,11 +1184,10 @@ mod tests {
 
     #[test]
     fn build_variables_confluence_uses_flat_ids() {
-        let mut cfg = global_config("cloud-conf");
-        cfg.product = Product::Confluence;
-        let vars =
-            build_variables(&cfg, &manifest_ctx_for(FctProduct::Confluence)).unwrap();
-        // Flattened top-level cloud_id feeds the Confluence template.
+        // No override: a Confluence module auto-resolves to the Confluence shape.
+        let cfg = global_config("cloud-conf");
+        let vars = build_variables(&cfg, &manifest_ctx_for(FctProduct::Confluence)).unwrap();
+        // The Confluence shape has a top-level `cloudId` and `extensionSpecificContexts`.
         assert_eq!(vars["cloudId"], json!("cloud-conf"));
         assert_eq!(
             vars["input"]["contextIds"][0],
@@ -1158,6 +1196,41 @@ mod tests {
         assert_eq!(
             vars["input"]["extensionSpecificContexts"]["installationId"],
             json!("inst-1")
+        );
+    }
+
+    #[test]
+    fn resolved_product_auto_resolves_shape_from_manifest() {
+        // Confluence module -> Confluence shape; Jira/JSM -> Global shape.
+        let cfg = global_config("cid"); // no override
+        assert_eq!(
+            resolved_product(&cfg, &manifest_ctx_for(FctProduct::Confluence)),
+            Product::Confluence
+        );
+        assert_eq!(
+            resolved_product(&cfg, &manifest_ctx_for(FctProduct::Jira)),
+            Product::Global
+        );
+        assert_eq!(
+            resolved_product(&cfg, &manifest_ctx_for(FctProduct::JiraServiceManagement)),
+            Product::Global
+        );
+    }
+
+    #[test]
+    fn resolved_product_override_wins_over_manifest() {
+        // Force the Global shape on a Confluence module (e.g. debugging).
+        let cfg = config_with_product("cid", Product::Global);
+        assert_eq!(
+            resolved_product(&cfg, &manifest_ctx_for(FctProduct::Confluence)),
+            Product::Global
+        );
+
+        // Force the Confluence shape on a Jira module.
+        let cfg = config_with_product("cid", Product::Confluence);
+        assert_eq!(
+            resolved_product(&cfg, &manifest_ctx_for(FctProduct::Jira)),
+            Product::Confluence
         );
     }
 }

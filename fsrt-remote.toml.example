@@ -2,8 +2,9 @@
 #
 # This file is GITIGNORED because it contains auth material.
 
-# GraphQL request *shape*: "confluence" or "global".
-product = "global"
+# GraphQL request *shape* is auto-detected from the module's manifest namespace
+# Set to to force a shape for a supported module:
+# product = "global"   # or "confluence"
 
 # Atlassian site subdomain (the "<site>" in <site>.atlassian.net). The GraphQL
 # gateway URL is derived from this automatically.

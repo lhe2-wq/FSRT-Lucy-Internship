@@ -11,8 +11,8 @@ use forge_loader::manifest::ForgeManifest;
 use tracing::{debug, info};
 
 use crate::mint_common::{
-    build_auth_headers, build_variables, extract_manifest_context, load_config, load_manifest,
-    mint_fct_jwt, resolve_environment, MintError, Product, Result,
+    MintError, Product, Result, build_auth_headers, build_variables, extract_manifest_context,
+    load_config, load_manifest, mint_fct_jwt, resolve_environment, resolved_product,
 };
 
 /// Runs the `mint-fct` flow and returns the minted FCT JWT.
@@ -39,21 +39,23 @@ pub fn run_mint_fct(
 
     let config = load_config(config_path)?;
 
-    if config.auth.auth_type == "basic_api_token" && config.product != Product::Confluence {
-        return Err(MintError::Config(
-            "auth.type=basic_api_token is only supported for product = \"confluence\"; \
-             use raw_cookie for global apps"
-                .to_string(),
-        ));
-    }
-
     let manifest_text = load_manifest(app_dir)?;
     let manifest: ForgeManifest<'_> = serde_yaml::from_str(&manifest_text)?;
 
     let mut manifest_ctx = extract_manifest_context(&manifest, module_key)?;
 
+    // The request shape is resolved from the manifest.
+    let product = resolved_product(&config, &manifest_ctx);
+    if config.auth.auth_type == "basic_api_token" && product != Product::Confluence {
+        return Err(MintError::Config(
+            "auth.type=basic_api_token is only supported for the Confluence request shape; \
+             use raw_cookie for global apps"
+                .to_string(),
+        ));
+    }
+
     info!(
-        product = %config.product,
+        product = %product,
         app_id = %manifest_ctx.app_id,
         app_id_bare = %manifest_ctx.app_id_bare,
         app_name = ?manifest_ctx.app_name,
@@ -69,8 +71,8 @@ pub fn run_mint_fct(
 
     if dry_run {
         let variables = build_variables(&config, &manifest_ctx)?;
-        let pretty = serde_json::to_string_pretty(&variables)
-            .unwrap_or_else(|_| variables.to_string());
+        let pretty =
+            serde_json::to_string_pretty(&variables).unwrap_or_else(|_| variables.to_string());
         info!("dry run requested — not sending GraphQL request");
         println!("{pretty}");
         return Ok(None);
@@ -88,8 +90,8 @@ mod tests {
     #[test]
     fn run_mint_fct_rejects_empty_module_key() {
         for key in ["", "   "] {
-            let err = run_mint_fct(Path::new("."), Path::new("./nope.toml"), key, true)
-                .unwrap_err();
+            let err =
+                run_mint_fct(Path::new("."), Path::new("./nope.toml"), key, true).unwrap_err();
             assert!(matches!(err, MintError::Config(_)), "got: {err:?}");
             assert!(err.to_string().contains("module_key"));
         }
