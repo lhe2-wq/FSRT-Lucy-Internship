@@ -6,10 +6,7 @@
 //!   - Template rendering
 //!   - Environment resolution and the core `mint_fct_jwt()` entry point
 
-use base64::{
-    Engine as _,
-    engine::general_purpose::{STANDARD as B64, URL_SAFE_NO_PAD as B64_URL},
-};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD as B64_URL};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -20,27 +17,7 @@ use std::path::Path;
 use forge_loader::manifest::ForgeManifest;
 use tracing::{info, warn};
 
-// The default FCT mutation for Confluence apps.
-pub const DEFAULT_CONFLUENCE_MUTATION: &str = r#"mutation useGetContextTokenMutation($cloudId: ID!, $input: ConfluenceForgeContextTokenRequestInput!) {
-  confluence_generateForgeContextToken(cloudId: $cloudId, input: $input) {
-    success
-    errors {
-      message
-      __typename
-    }
-    forgeContextToken {
-      jwt
-      expiresAt
-      extensionId
-      __typename
-    }
-    __typename
-  }
-}"#;
-
-pub const CONFLUENCE_OPERATION_NAME: &str = "useGetContextTokenMutation";
-
-// The default FCT mutation for global apps (Jira, Compass, Rovo, etc.).
+// The default FCT mutation for global apps (`globalApp_signForgeContextTokens`).
 pub const DEFAULT_GLOBAL_APP_MUTATION: &str = r#"mutation SignForgeContextToken($input: GlobalAppSignForgeContextTokensInput!) {
   globalApp_signForgeContextTokens(input: $input) {
     success
@@ -92,32 +69,11 @@ pub enum MintError {
 
 pub type Result<T> = std::result::Result<T, MintError>;
 
-// Config structs, deserialised from the `fsrt-remote.toml` config file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Product {
-    Confluence,
-    Global,
-}
-
-impl std::fmt::Display for Product {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Product::Confluence => write!(f, "confluence"),
-            Product::Global => write!(f, "global"),
-        }
-    }
-}
-
 /// File-facing configuration, deserialised directly from `fsrt-remote.toml`.
 /// Convert into the runtime [`MintFctConfig`] via `From`/`Into`.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FsrtRemoteConfig {
-    // Optional override for the GraphQL request *shape* (Confluence vs Global).
-    #[serde(default)]
-    pub product: Option<Product>,
-
     // Atlassian site domain (the full host, e.g. "your-site.atlassian.net")
     // from which the GraphQL gateway and tenant-info URLs are derived.
     pub site_domain: String,
@@ -163,9 +119,6 @@ impl FsrtRemoteConfig {
 /// Runtime minting configuration, built from validated [`FsrtRemoteConfig`].
 #[derive(Debug, Serialize)]
 pub struct MintFctConfig {
-    // Request-shape override, carried over from the file config.
-    pub product: Option<Product>,
-
     // Site domain (the full host, e.g. "your-site.atlassian.net").
     pub site_domain: String,
 
@@ -189,7 +142,6 @@ impl TryFrom<FsrtRemoteConfig> for MintFctConfig {
     fn try_from(file: FsrtRemoteConfig) -> Result<Self> {
         let site_domain = parse_site_domain(&file.site_domain)?;
         Ok(MintFctConfig {
-            product: file.product,
             site_domain,
             auth: file.auth,
             cloud_id: None,
@@ -270,21 +222,14 @@ impl MintFctConfig {
     }
 }
 
+// Session-cookie auth is the only supported method. Provide either the inline
+// value or a path to a file containing it. `deny_unknown_fields` rejects removed
+// keys such as `type`, `email`, and `api_token` with a clear error.
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AuthConfig {
-    #[serde(rename = "type", default = "default_auth_type")]
-    pub auth_type: String,
-
     pub raw_cookie: Option<String>,
     pub raw_cookie_file: Option<String>,
-
-    pub email: Option<String>,
-    pub api_token: Option<String>,
-    pub api_token_file: Option<String>,
-}
-
-fn default_auth_type() -> String {
-    "raw_cookie".to_string()
 }
 
 // The Atlassian product an FCT is being minted for.
@@ -325,21 +270,6 @@ impl FctProduct {
     fn context_ari(self, cloud_id: &str) -> String {
         format!("ari:cloud:{}::site/{cloud_id}", self.ari_owner())
     }
-
-    // The GraphQL request *shape* this product uses.
-    fn request_shape(self) -> Product {
-        match self {
-            FctProduct::Confluence => Product::Confluence,
-            FctProduct::Jira | FctProduct::JiraServiceManagement => Product::Global,
-        }
-    }
-}
-
-// Resolves which GraphQL request shape to use for a mint.
-pub(crate) fn resolved_product(config: &MintFctConfig, manifest_ctx: &ManifestContext) -> Product {
-    config
-        .product
-        .unwrap_or_else(|| manifest_ctx.product.request_shape())
 }
 
 // Manifest context
@@ -351,7 +281,8 @@ pub struct ManifestContext {
     pub app_id_bare: String,
     pub app_name: Option<String>,
     pub module_key: Option<String>,
-    pub module_type: Option<String>,
+    // Full FCT `extensionType` (e.g. "jira:issuePanel"; "xen:macro" for macros).
+    pub extension_type: String,
     // Product that declared the module, resolved from the manifest key prefix.
     pub product: FctProduct,
     // Resolved from the Forge platform via fetch_app_environment().
@@ -370,25 +301,31 @@ pub fn extract_manifest_context(
 
     let app_name = manifest.app.name.map(|s| s.to_string());
 
-    let (module_type, product_prefix) =
-        manifest.modules.fct_module_for_key(module_key).ok_or_else(|| {
-            let available = manifest.modules.fct_module_keys();
-            let hint = if available.is_empty() {
-                "the manifest declares no FCT-capable modules".to_string()
-            } else {
-                format!(
-                    "available module keys:\n{}",
-                    available
-                        .iter()
-                        .map(|k| format!("  - {k}"))
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                )
-            };
-            MintError::Config(format!(
-                "module_key '{module_key}' does not match any FCT-capable module in the manifest\n{hint}"
-            ))
-        })?;
+    let extension_type = manifest.modules.fct_module_for_key(module_key).ok_or_else(|| {
+        let available = manifest.modules.fct_module_keys();
+        let hint = if available.is_empty() {
+            "the manifest declares no FCT-capable modules".to_string()
+        } else {
+            format!(
+                "available module keys:\n{}",
+                available
+                    .iter()
+                    .map(|k| format!("  - {k}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+        };
+        MintError::Config(format!(
+            "module_key '{module_key}' does not match any FCT-capable module in the manifest\n{hint}"
+        ))
+    })?;
+
+    // Recover the product namespace from the extensionType for the context ARI.
+    let product_prefix = if extension_type == "xen:macro" {
+        "confluence" // special cases for Confluence macro
+    } else {
+        extension_type.split(':').next().unwrap_or_default()
+    };
 
     let product = FctProduct::from_manifest_prefix(product_prefix).ok_or_else(|| {
         MintError::Config(format!(
@@ -402,7 +339,7 @@ pub fn extract_manifest_context(
         app_id_bare,
         app_name,
         module_key: Some(module_key.to_string()),
-        module_type: Some(module_type.to_string()),
+        extension_type: extension_type.to_owned(),
         product,
         environment_id: None,
         app_version: None,
@@ -436,73 +373,52 @@ pub fn build_auth_headers(auth: &AuthConfig) -> Result<HashMap<String, String>> 
 
     info!("building auth headers from config — this uses sensitive credentials");
 
-    match auth.auth_type.as_str() {
-        "raw_cookie" => {
-            let raw = load_secret_from_config(
-                auth.raw_cookie.as_deref(),
-                auth.raw_cookie_file.as_deref(),
-            )?
-            .ok_or_else(|| {
-                MintError::Config(
-                    "auth.type=raw_cookie requires `raw_cookie` (inline) or `raw_cookie_file`"
-                        .into(),
-                )
-            })?;
+    let raw = load_secret_from_config(auth.raw_cookie.as_deref(), auth.raw_cookie_file.as_deref())?
+        .ok_or_else(|| {
+            MintError::Config(
+                "auth requires a session cookie: set `raw_cookie` (inline) or `raw_cookie_file`"
+                    .into(),
+            )
+        })?;
 
-            info!(bytes = raw.len(), "loaded session cookie");
+    info!(bytes = raw.len(), "loaded session cookie");
 
-            if let Some(secs_ago) = cookie_expired_secs_ago(&raw) {
-                return Err(MintError::CookieExpired(format!(
-                    "Session cookie EXPIRED {} ago. Renew it (e.g. re-copy the \
-                     Cookie header from your browser/Burp into `raw_cookie` or \
-                     the file referenced by `raw_cookie_file`), then retry.",
-                    format_duration(secs_ago),
-                )));
-            }
-            check_cookie_expiry(&raw);
-
-            headers.insert("Cookie".to_string(), raw.trim().to_string());
-        }
-
-        "basic_api_token" => {
-            let email = auth
-                .email
-                .as_deref()
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| {
-                    MintError::Config(
-                        "auth.type=basic_api_token requires `email` in the config".into(),
-                    )
-                })?;
-
-            let token =
-                load_secret_from_config(auth.api_token.as_deref(), auth.api_token_file.as_deref())?
-                    .ok_or_else(|| {
-                        MintError::Config(
-                    "auth.type=basic_api_token requires `api_token` (inline) or `api_token_file`"
-                        .into(),
-                )
-                    })?;
-
-            let credentials = format!("{}:{}", email.trim(), token.trim());
-            let encoded = B64.encode(credentials.as_bytes());
-
-            info!(email = %email.trim(), "using basic API token auth");
-            headers.insert("Authorization".to_string(), format!("Basic {}", encoded));
-        }
-
-        other => {
-            return Err(MintError::Config(format!(
-                "Unsupported auth.type: '{}'. Valid types: raw_cookie, basic_api_token",
-                other
+    match cookie_expiry(&raw) {
+        Some(CookieExpiry::Expired(secs_ago)) => {
+            return Err(MintError::CookieExpired(format!(
+                "Session cookie EXPIRED {} ago. Renew it (e.g. re-copy the \
+                 Cookie header from your browser/Burp into `raw_cookie` or \
+                 the file referenced by `raw_cookie_file`), then retry.",
+                format_duration(secs_ago),
             )));
         }
+        Some(CookieExpiry::Valid(secs_remaining)) => info!(
+            expires_in = %format_duration(secs_remaining),
+            "session cookie valid"
+        ),
+        None => warn!(
+            cookie_name = SESSION_COOKIE_NAME,
+            "could not read the session cookie expiry — cannot check expiry"
+        ),
     }
+
+    headers.insert("Cookie".to_string(), normalize_cookie_header(&raw));
 
     Ok(headers)
 }
 
 const SESSION_COOKIE_NAME: &str = "tenant.session.token";
+
+// Normalises the configured session cookie into a full `Cookie` header value.
+fn normalize_cookie_header(raw_cookie: &str) -> String {
+    let trimmed = raw_cookie.trim();
+
+    if trimmed.contains('=') {
+        trimmed.to_string()
+    } else {
+        format!("{SESSION_COOKIE_NAME}={trimmed}")
+    }
+}
 
 fn extract_session_token(raw_cookie: &str) -> Option<&str> {
     for pair in raw_cookie.split(';') {
@@ -541,52 +457,22 @@ fn format_duration(seconds: i64) -> String {
     }
 }
 
-fn cookie_expired_secs_ago(raw_cookie: &str) -> Option<i64> {
+enum CookieExpiry {
+    Expired(i64),
+    Valid(i64),
+}
+
+fn cookie_expiry(raw_cookie: &str) -> Option<CookieExpiry> {
     let token = extract_session_token(raw_cookie)?;
     let exp = decode_jwt_exp(token)?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    (exp <= now).then_some(now - exp)
-}
-
-pub fn check_cookie_expiry(raw_cookie: &str) -> bool {
-    let Some(token) = extract_session_token(raw_cookie) else {
-        warn!(
-            cookie_name = SESSION_COOKIE_NAME,
-            "could not find session cookie — cannot check expiry"
-        );
-        return false;
-    };
-
-    let Some(exp) = decode_jwt_exp(token) else {
-        warn!(
-            cookie_name = SESSION_COOKIE_NAME,
-            "could not read an `exp` claim (not a JWT?) — cannot check expiry"
-        );
-        return false;
-    };
-
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-
     if exp <= now {
-        warn!(
-            expired_ago = %format_duration(now - exp),
-            exp,
-            "session cookie EXPIRED — renew it before minting"
-        );
-        false
+        Some(CookieExpiry::Expired(now - exp))
     } else {
-        info!(
-            expires_in = %format_duration(exp - now),
-            exp,
-            "session cookie valid"
-        );
-        true
+        Some(CookieExpiry::Valid(exp - now))
     }
 }
 
@@ -905,7 +791,7 @@ pub fn build_variables(
             "app_id_bare":    manifest_ctx.app_id_bare,
             "app_name":       manifest_ctx.app_name,
             "module_key":     manifest_ctx.module_key,
-            "module_type":    manifest_ctx.module_type,
+            "extension_type": manifest_ctx.extension_type,
             "environment_id": manifest_ctx.environment_id,
             "app_version":    manifest_ctx.app_version,
         },
@@ -913,47 +799,26 @@ pub fn build_variables(
         "context_ari": context_ari,
     });
 
-    let template: JsonValue = match resolved_product(config, manifest_ctx) {
-        Product::Confluence => serde_json::json!({
-            "cloudId": "${config.cloud_id}",
-            "input": {
-                // Product-resolved at runtime from the manifest.
-                "contextIds": ["${context_ari}"],
-                "extensionSpecificContexts": {
-                    "appVersion": "${manifest.app_version}",
-                    "extensionId": "ari:cloud:ecosystem::extension/${manifest.app_id_bare}/${manifest.environment_id}/static/${manifest.module_key}",
-                    "extensionType": "xen:macro", // manifest.module_type
-                    "installationId": "${config.installation_id}",
-                    "context": {
-                        "moduleKey": "${manifest.module_key}",
-                        "type": "${manifest.module_type}",
-                        "environmentId": "${manifest.environment_id}",
-                        "extension": { "type": "${manifest.module_type}" }
-                    }
+    let template: JsonValue = serde_json::json!({
+        "input": {
+            // Product-resolved at runtime from the manifest.
+            "contextIds": ["${context_ari}"],
+            "unlicensed": false,
+            "extensionContexts": [{
+                "appVersion": "${manifest.app_version}",
+                "extensionId": "ari:cloud:ecosystem::extension/${manifest.app_id_bare}/${manifest.environment_id}/static/${manifest.module_key}",
+                "extensionType": "${manifest.extension_type}",
+                "installationId": "${config.installation_id}",
+                "context": {
+                    "moduleKey": "${manifest.module_key}",
+                    "cloudId": "${config.cloud_id}",
+                    "environmentId": "${manifest.environment_id}",
+                    "type": "${manifest.extension_type}",
+                    "extension": { "type": "${manifest.extension_type}" }
                 }
-            }
-        }),
-        Product::Global => serde_json::json!({
-            "input": {
-                // Product-resolved at runtime from the manifest.
-                "contextIds": ["${context_ari}"],
-                "unlicensed": false,
-                "extensionContexts": [{
-                    "appVersion": "${manifest.app_version}",
-                    "extensionId": "ari:cloud:ecosystem::extension/${manifest.app_id_bare}/${manifest.environment_id}/static/${manifest.module_key}",
-                    "extensionType": "xen:${manifest.module_type}",
-                    "installationId": "${config.installation_id}",
-                    "context": {
-                        "moduleKey": "${manifest.module_key}",
-                        "cloudId": "${config.cloud_id}",
-                        "environmentId": "${manifest.environment_id}",
-                        "type": "${manifest.module_type}",
-                        "extension": { "type": "${manifest.module_type}" }
-                    }
-                }]
-            }
-        }),
-    };
+            }]
+        }
+    });
 
     let rendered = render_template(&template, &context);
 
@@ -981,19 +846,11 @@ pub fn mint_fct_jwt_opts(
     auth_headers: &HashMap<String, String>,
     quiet: bool,
 ) -> Result<String> {
-    let product = resolved_product(config, manifest_ctx);
-    let (query, operation_name, response_key) = match product {
-        Product::Confluence => (
-            DEFAULT_CONFLUENCE_MUTATION,
-            CONFLUENCE_OPERATION_NAME,
-            "confluence_generateForgeContextToken",
-        ),
-        Product::Global => (
-            DEFAULT_GLOBAL_APP_MUTATION,
-            GLOBAL_APP_OPERATION_NAME,
-            "globalApp_signForgeContextTokens",
-        ),
-    };
+    let (query, operation_name, response_key) = (
+        DEFAULT_GLOBAL_APP_MUTATION,
+        GLOBAL_APP_OPERATION_NAME,
+        "globalApp_signForgeContextTokens",
+    );
 
     let variables = build_variables(config, manifest_ctx)?;
 
@@ -1050,24 +907,13 @@ pub fn mint_fct_jwt_opts(
         }));
     }
 
-    let jwt = match product {
-        Product::Confluence => fct_obj
-            .and_then(|o| o.get("forgeContextToken"))
-            .and_then(|t| t.get("jwt"))
-            .and_then(|j| j.as_str())
-            .ok_or_else(|| {
-                MintError::FctFailed("forgeContextToken.jwt missing from response".to_string())
-            })?,
-        Product::Global => fct_obj
-            .and_then(|o| o.get("tokens"))
-            .and_then(|t| t.as_array())
-            .and_then(|arr| arr.first())
-            .and_then(|t| t.get("jwt"))
-            .and_then(|j| j.as_str())
-            .ok_or_else(|| {
-                MintError::FctFailed("tokens[0].jwt missing from response".to_string())
-            })?,
-    };
+    let jwt = fct_obj
+        .and_then(|o| o.get("tokens"))
+        .and_then(|t| t.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|t| t.get("jwt"))
+        .and_then(|j| j.as_str())
+        .ok_or_else(|| MintError::FctFailed("tokens[0].jwt missing from response".to_string()))?;
 
     Ok(jwt.to_string())
 }
@@ -1132,12 +978,6 @@ mod tests {
     }
 
     #[test]
-    fn product_display_matches_config_values() {
-        assert_eq!(Product::Confluence.to_string(), "confluence");
-        assert_eq!(Product::Global.to_string(), "global");
-    }
-
-    #[test]
     fn format_duration_buckets() {
         assert_eq!(format_duration(45), "45s");
         assert_eq!(format_duration(3 * 60), "3m");
@@ -1147,7 +987,7 @@ mod tests {
     }
 
     #[test]
-    fn extract_manifest_context_resolves_module_type_for_key() {
+    fn extract_manifest_context_resolves_extension_type_for_key() {
         let json = r#"{
             "app": { "name": "My App", "id": "ari:cloud:ecosystem::app/abc-123" },
             "modules": {
@@ -1158,7 +998,24 @@ mod tests {
         let ctx = extract_manifest_context(&manifest, "my-macro").unwrap();
         assert_eq!(ctx.app_id_bare, "abc-123");
         assert_eq!(ctx.module_key.as_deref(), Some("my-macro"));
-        assert_eq!(ctx.module_type.as_deref(), Some("macro"));
+        assert_eq!(ctx.extension_type, "xen:macro");
+        assert_eq!(ctx.product, FctProduct::Confluence);
+    }
+
+    #[test]
+    fn extract_manifest_context_uses_full_namespace_as_extension_type() {
+        // Non-macro modules use their fully-qualified `product:moduleType` key
+        // verbatim as the extensionType.
+        let json = r#"{
+            "app": { "name": "My App", "id": "ari:cloud:ecosystem::app/abc-123" },
+            "modules": {
+                "jira:issuePanel": [ { "key": "my-panel", "function": "panelFn" } ]
+            }
+        }"#;
+        let manifest: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
+        let ctx = extract_manifest_context(&manifest, "my-panel").unwrap();
+        assert_eq!(ctx.extension_type, "jira:issuePanel");
+        assert_eq!(ctx.product, FctProduct::Jira);
     }
 
     #[test]
@@ -1240,16 +1097,10 @@ mod tests {
     // Builds a minimal global-app config for build_variables tests.
     fn global_config(cloud_id: &str) -> MintFctConfig {
         MintFctConfig {
-            // No override — shape auto-resolves from the manifest product.
-            product: None,
             site_domain: "example.atlassian.net".to_string(),
             auth: AuthConfig {
-                auth_type: default_auth_type(),
                 raw_cookie: Some("x".to_string()),
                 raw_cookie_file: None,
-                email: None,
-                api_token: None,
-                api_token_file: None,
             },
             cloud_id: Some(cloud_id.to_string()),
             installation_id: "inst-1".to_string(),
@@ -1259,25 +1110,13 @@ mod tests {
         }
     }
 
-    // Build a config with an explicit product-shape override.
-    fn config_with_product(cloud_id: &str, product: Product) -> MintFctConfig {
-        let mut cfg = global_config(cloud_id);
-        cfg.product = Some(product);
-        cfg
-    }
-
     // Builds a minimal, valid file-facing config (as if parsed from TOML).
     fn file_config() -> FsrtRemoteConfig {
         FsrtRemoteConfig {
-            product: None,
             site_domain: "example.atlassian.net".to_string(),
             auth: AuthConfig {
-                auth_type: default_auth_type(),
                 raw_cookie: Some("x".to_string()),
                 raw_cookie_file: None,
-                email: None,
-                api_token: None,
-                api_token_file: None,
             },
             installation_id: "inst-1".to_string(),
             environment_id: None,
@@ -1324,50 +1163,135 @@ mod tests {
         assert_eq!(cfg.cloud_id.as_deref(), Some("already-derived"));
     }
 
+    // Writes `toml` to a temp file and loads it via the production `load_config`.
+    fn load_config_from_toml(toml: &str) -> Result<MintFctConfig> {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "tmp_rovo_fsrt_cfg_{}_{}.toml",
+            std::process::id(),
+            // avoid collisions between tests in the same process
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::write(&path, toml).unwrap();
+        let cfg = load_config(&path);
+        let _ = std::fs::remove_file(&path); // best-effort cleanup
+        cfg
+    }
+
     #[test]
-    fn config_file_rejects_cloud_id() {
-        // cloud_id is derived at runtime and is not accepted in file config.
-        let toml = r#"
+    fn config_file_valid_minimal_loads() {
+        // A minimal valid config (cookie auth, no removed keys) loads cleanly and
+        // leaves cloud_id unset for runtime derivation.
+        let cfg = load_config_from_toml(
+            r#"
 site_domain = "example.atlassian.net"
-cloud_id = "should-be-ignored"
 installation_id = "inst-123"
 
 [auth]
-type = "raw_cookie"
 raw_cookie = "tenant.session.token=a.b.c"
-"#;
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!("tmp_rovo_fsrt_cfg_{}.toml", std::process::id()));
-        std::fs::write(&path, toml).unwrap();
+"#,
+        )
+        .expect("minimal config should load");
+        assert_eq!(cfg.cloud_id, None);
+        assert_eq!(cfg.installation_id, "inst-123");
+    }
 
-        let cfg = load_config(&path);
-        let _ = std::fs::remove_file(&path); // best-effort cleanup
+    #[test]
+    fn config_file_rejects_cloud_id_key() {
+        // cloud_id is not user-configurable; deny_unknown_fields rejects it.
+        let err = load_config_from_toml(
+            r#"
+site_domain = "example.atlassian.net"
+cloud_id = "should-be-rejected"
+installation_id = "inst-123"
 
-        let err = cfg.unwrap_err().to_string();
+[auth]
+raw_cookie = "tenant.session.token=a.b.c"
+"#,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("cloud_id"), "got: {err}");
     }
 
     #[test]
-    fn config_file_rejects_module_key() {
-        let err = config::Config::builder()
-            .add_source(config::File::from_str(
-                r#"
+    fn config_file_rejects_removed_keys() {
+        // Removed keys must fail to parse rather than be silently ignored.
+        // `product` at the top level.
+        let err = load_config_from_toml(
+            r#"
 site_domain = "example.atlassian.net"
 installation_id = "inst-123"
-module_key = "manifest-is-the-source-of-truth"
+product = "global"
+
+[auth]
+raw_cookie = "tenant.session.token=a.b.c"
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("product"), "got: {err}");
+
+        // `type` inside [auth].
+        let err = load_config_from_toml(
+            r#"
+site_domain = "example.atlassian.net"
+installation_id = "inst-123"
 
 [auth]
 type = "raw_cookie"
 raw_cookie = "tenant.session.token=a.b.c"
 "#,
-                config::FileFormat::Toml,
-            ))
-            .build()
-            .unwrap()
-            .try_deserialize::<FsrtRemoteConfig>()
-            .unwrap_err()
-            .to_string();
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("type"), "got: {err}");
+    }
+
+    #[test]
+    fn normalize_cookie_header_prefixes_bare_token() {
+        // A bare 3-part JWT gets the cookie name prepended.
+        assert_eq!(
+            normalize_cookie_header("eyJhbGc.eyJzdWI.sIg"),
+            "tenant.session.token=eyJhbGc.eyJzdWI.sIg"
+        );
+        // Surrounding whitespace is trimmed before prefixing.
+        assert_eq!(
+            normalize_cookie_header("  eyJhbGc.eyJzdWI.sIg  "),
+            "tenant.session.token=eyJhbGc.eyJzdWI.sIg"
+        );
+    }
+
+    #[test]
+    fn config_file_rejects_module_key() {
+        let err = load_config_from_toml(
+            r#"
+site_domain = "example.atlassian.net"
+installation_id = "inst-123"
+module_key = "manifest-is-the-source-of-truth"
+
+[auth]
+raw_cookie = "tenant.session.token=a.b.c"
+"#,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("module_key"), "got: {err}");
+    }
+
+    #[test]
+    fn normalize_cookie_header_leaves_full_cookie_untouched() {
+        // Already-prefixed value is used verbatim (aside from trimming).
+        assert_eq!(
+            normalize_cookie_header("tenant.session.token=eyJhbGc.eyJzdWI.sIg"),
+            "tenant.session.token=eyJhbGc.eyJzdWI.sIg"
+        );
+        // A multi-pair cookie string is left as-is.
+        let full = "tenant.session.token=eyJhbGc.eyJzdWI.sIg; other=1";
+        assert_eq!(normalize_cookie_header(full), full);
     }
 
     #[test]
@@ -1433,7 +1357,7 @@ raw_cookie = "tenant.session.token=a.b.c"
             app_id_bare: "abc-123".to_string(),
             app_name: Some("My App".to_string()),
             module_key: Some("mod".to_string()),
-            module_type: Some("globalPage".to_string()),
+            extension_type: "jira:globalPage".to_string(),
             product,
             environment_id: Some("env-1".to_string()),
             app_version: Some("1".to_string()),
@@ -1466,54 +1390,26 @@ raw_cookie = "tenant.session.token=a.b.c"
     }
 
     #[test]
-    fn build_variables_confluence_uses_flat_ids() {
-        // No override: a Confluence module auto-resolves to the Confluence shape.
+    fn build_variables_confluence_uses_global_shape() {
+        // A Confluence module now mints via the global-app shape, but still uses
+        // the confluence-owned site ARI (product identity is preserved).
         let cfg = global_config("cloud-conf");
         let vars = build_variables(&cfg, &manifest_ctx_for(FctProduct::Confluence)).unwrap();
-        // The Confluence shape has a top-level `cloudId` and `extensionSpecificContexts`.
-        assert_eq!(vars["cloudId"], json!("cloud-conf"));
+
+        // Global shape: no top-level `cloudId`, uses `input.extensionContexts`.
+        assert!(vars.get("cloudId").is_none(), "got: {vars}");
         assert_eq!(
             vars["input"]["contextIds"][0],
             json!("ari:cloud:confluence::site/cloud-conf")
         );
         assert_eq!(
-            vars["input"]["extensionSpecificContexts"]["installationId"],
+            vars["input"]["extensionContexts"][0]["installationId"],
             json!("inst-1")
         );
-    }
-
-    #[test]
-    fn resolved_product_auto_resolves_shape_from_manifest() {
-        // Confluence module -> Confluence shape; Jira/JSM -> Global shape.
-        let cfg = global_config("cid"); // no override
+        // cloudId is carried in the nested context, not at the top level.
         assert_eq!(
-            resolved_product(&cfg, &manifest_ctx_for(FctProduct::Confluence)),
-            Product::Confluence
-        );
-        assert_eq!(
-            resolved_product(&cfg, &manifest_ctx_for(FctProduct::Jira)),
-            Product::Global
-        );
-        assert_eq!(
-            resolved_product(&cfg, &manifest_ctx_for(FctProduct::JiraServiceManagement)),
-            Product::Global
-        );
-    }
-
-    #[test]
-    fn resolved_product_override_wins_over_manifest() {
-        // Force the Global shape on a Confluence module (e.g. debugging).
-        let cfg = config_with_product("cid", Product::Global);
-        assert_eq!(
-            resolved_product(&cfg, &manifest_ctx_for(FctProduct::Confluence)),
-            Product::Global
-        );
-
-        // Force the Confluence shape on a Jira module.
-        let cfg = config_with_product("cid", Product::Confluence);
-        assert_eq!(
-            resolved_product(&cfg, &manifest_ctx_for(FctProduct::Jira)),
-            Product::Confluence
+            vars["input"]["extensionContexts"][0]["context"]["cloudId"],
+            json!("cloud-conf")
         );
     }
 }

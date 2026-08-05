@@ -28,6 +28,48 @@ struct CommonKey<'a> {
     resolver: Option<Resolver<'a>>,
 }
 
+/// Uniform access to a module's `key`.
+trait ModuleKey {
+    fn module_key(&self) -> &str;
+}
+
+// Structs that store the key directly.
+impl ModuleKey for CommonKey<'_> {
+    fn module_key(&self) -> &str {
+        self.key
+    }
+}
+impl ModuleKey for RovoAgent<'_> {
+    fn module_key(&self) -> &str {
+        self.key
+    }
+}
+
+/// Generates `ModuleKey` for structs that embed a `common_keys: CommonKey` (one level down).
+macro_rules! impl_module_key_via_common {
+    ($($ty:ident),+ $(,)?) => {$(
+        impl ModuleKey for $ty<'_> {
+            fn module_key(&self) -> &str {
+                self.common_keys.key
+            }
+        }
+    )+};
+}
+
+impl_module_key_via_common!(
+    MacroMod,
+    ContentByLineItem,
+    JiraAdminPage,
+    CustomField,
+    CustomFieldType,
+    DashboardGadget,
+    IssueClass,
+    UiModificatons,
+    WorkflowValidator,
+    WorkflowPostFunction,
+    AssetsImportType,
+);
+
 trait HasFunctions<'a> {
     fn append_functions<I: Extend<&'a str>>(&self, funcs: &mut I);
 }
@@ -667,6 +709,13 @@ pub struct Module<'a> {
     extra: FxHashMap<String, serde_yaml::Value>,
 }
 
+impl Module<'_> {
+    /// The module's `key`, if present.
+    pub fn key(&self) -> Option<&str> {
+        self.extra.get("key").and_then(serde_yaml::Value::as_str)
+    }
+}
+
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Resource<'a> {
     pub key: &'a str,
@@ -974,51 +1023,89 @@ impl<'a> ForgeModules<'a> {
     }
 }
 
+/// Generates `fct_module_for_key` and `fct_module_keys` from a single registry
+/// of `"extensionType" => field` pairs, so a new module is added in one place.
+macro_rules! fct_modules {
+    ($($ext_type:literal => $field:ident),+ $(,)?) => {
+        pub fn fct_module_for_key(&self, key: &str) -> Option<&str> {
+            // Special case: a `macro` module mints as `xen:macro`.
+            if self.macros.iter().any(|m| m.module_key() == key) {
+                return Some("xen:macro");
+            }
+            $(
+                if self.$field.iter().any(|m| m.module_key() == key) {
+                    return Some($ext_type);
+                }
+            )+
+            // Fall back: its map key is already the full `product:moduleType` string.
+            self.extra.iter().find_map(|(module_string, modules)| {
+                modules
+                    .iter()
+                    .any(|m| m.key() == Some(key))
+                    .then(|| module_string.as_str())
+            })
+        }
+
+        /// Collects the keys of every FCT-capable module declared in this manifest.
+        pub fn fct_module_keys(&self) -> Vec<&str> {
+            let mut keys = Vec::new();
+            keys.extend(self.macros.iter().map(ModuleKey::module_key));
+            $( keys.extend(self.$field.iter().map(ModuleKey::module_key)); )+
+            // Modules captured by the `extra` catch-all (only those with a `key`).
+            keys.extend(
+                self.extra
+                    .values()
+                    .flat_map(|modules| modules.iter().filter_map(|m| m.key())),
+            );
+            keys
+        }
+    };
+}
+
 impl ForgeModules<'_> {
-    /// Resolves a caller-supplied `module_key` to its FCT `module_type` or `None`.
-    pub fn fct_module_for_key(&self, key: &str) -> Option<(&'static str, &'static str)> {
-        // (module_type, product-namespace prefix)
-        if self.macros.iter().any(|m| m.common_keys.key == key) {
-            return Some(("macro", "confluence"));
-        }
-        if self.confluence_global_page.iter().any(|m| m.key == key) {
-            return Some(("globalPage", "confluence"));
-        }
-        if self.space_page.iter().any(|m| m.key == key) {
-            return Some(("spacePage", "confluence"));
-        }
-        if self.jira_global_page.iter().any(|m| m.key == key)
-            || self.project_page.iter().any(|m| m.key == key)
-        {
-            return Some(("globalPage", "jira"));
-        }
-        if self.issue_panel.iter().any(|m| m.key == key) {
-            return Some(("issuePanel", "jira"));
-        }
-        if self.queue_page.iter().any(|m| m.key == key) {
-            return Some(("queuePage", "jiraServiceManagement"));
-        }
-        None
-        // TODO: add more module types (ex. Bitbucket, Rovo, etc.)
-    }
-
-    /// Returns the FCT `module_type` string for a caller-supplied `module_key`, or `None`.
-    pub fn fct_module_type_for_key(&self, key: &str) -> Option<&'static str> {
-        self.fct_module_for_key(key)
-            .map(|(module_type, _)| module_type)
-    }
-
-    /// Collects the keys of every FCT-capable module declared in this manifest.
-    pub fn fct_module_keys(&self) -> Vec<&str> {
-        let mut keys = Vec::new();
-        keys.extend(self.macros.iter().map(|m| m.common_keys.key));
-        keys.extend(self.confluence_global_page.iter().map(|m| m.key));
-        keys.extend(self.space_page.iter().map(|m| m.key));
-        keys.extend(self.jira_global_page.iter().map(|m| m.key));
-        keys.extend(self.project_page.iter().map(|m| m.key));
-        keys.extend(self.issue_panel.iter().map(|m| m.key));
-        keys.extend(self.queue_page.iter().map(|m| m.key));
-        keys
+    fct_modules! {
+        // "extensionType"                                       => field
+        "compass:adminPage"                                      => compass_admin_page,
+        "compass:componentPage"                                  => component_page,
+        "compass:globalPage"                                     => compass_global_page,
+        "compass:teamPage"                                       => team_page,
+        "confluence:contentAction"                               => content_action,
+        "confluence:contentBylineItem"                           => content_by_line_item,
+        "confluence:contextMenu"                                 => context_menu,
+        "confluence:globalPage"                                  => confluence_global_page,
+        "confluence:homepageFeed"                                => homepage_feed,
+        "confluence:spacePage"                                   => space_page,
+        "confluence:spaceSettings"                               => space_settings,
+        "jira:adminPage"                                         => jira_admin_page,
+        "jira:customField"                                       => custom_field,
+        "jira:customFieldType"                                   => custom_field_type,
+        "jira:dashboardBackgroundScript"                         => dashboard_background_script,
+        "jira:dashboardGadget"                                   => dashboard_gadget,
+        "jira:globalPage"                                        => jira_global_page,
+        "jira:issueAction"                                       => issue_action,
+        "jira:issueContext"                                      => issue_context,
+        "jira:issueGlance"                                       => issue_glance,
+        "jira:issuePanel"                                        => issue_panel,
+        "jira:issueViewBackgroundScript"                         => issue_view_background_script,
+        "jira:jqlFunction"                                       => jql_function,
+        "jira:projectPage"                                       => project_page,
+        "jira:projectSettingsPage"                               => project_settings_page,
+        "jira:uiModifications"                                   => ui_modifications,
+        "jira:workflowValidator"                                 => workflow_validator,
+        "jira:workflowPostFunction"                              => workflow_post_function,
+        "jiraServiceManagement:assetsImportType"                 => assets_import_type,
+        "jiraServiceManagement:organizationPanel"                => org_panel,
+        "jiraServiceManagement:portalFooter"                     => portal_footer,
+        "jiraServiceManagement:portalHeader"                     => portal_header,
+        "jiraServiceManagement:portalProfilePanel"               => portal_profile_panel,
+        "jiraServiceManagement:portalRequestCreatePropertyPanel" => portal_req,
+        "jiraServiceManagement:portalRequestDetail"              => portal_request_detail,
+        "jiraServiceManagement:portalRequestDetailPanel"         => portal_request_detail_panel,
+        "jiraServiceManagement:portalRequestViewAction"          => portal_request_view_action,
+        "jiraServiceManagement:portalSubheader"                  => portal_subheader,
+        "jiraServiceManagement:portalUserMenuAction"             => portal_header_menu_action,
+        "jiraServiceManagement:queuePage"                        => queue_page,
+        "rovo:agent"                                             => rovo_agent,
     }
 }
 
@@ -1093,6 +1180,88 @@ fn is_hardcoded_variable(value: &str) -> bool {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn fct_module_for_key_maps_macro_to_xen() {
+        let json = r#"{
+            "app": { "name": "A", "id": "a" },
+            "modules": { "macro": [ { "key": "my-macro", "function": "f" } ] }
+        }"#;
+        let m: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
+        assert_eq!(m.modules.fct_module_for_key("my-macro"), Some("xen:macro"));
+    }
+
+    #[test]
+    fn fct_module_for_key_uses_verbatim_namespace_for_explicit_field() {
+        let json = r#"{
+            "app": { "name": "A", "id": "a" },
+            "modules": { "jira:issuePanel": [ { "key": "panel-1", "function": "f" } ] }
+        }"#;
+        let m: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            m.modules.fct_module_for_key("panel-1"),
+            Some("jira:issuePanel")
+        );
+    }
+
+    #[test]
+    fn fct_module_for_key_resolves_unmodelled_module_via_extra_map() {
+        // `jira:dashboardGadget` is explicit, but a namespace the struct does not
+        // model (e.g. `rovo:skill`) must still resolve via the flattened `extra`
+        // map, using its manifest key verbatim as the extensionType.
+        let json = r#"{
+            "app": { "name": "A", "id": "a" },
+            "modules": { "rovo:skill": [ { "key": "skill-1" } ] }
+        }"#;
+        let m: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
+        assert_eq!(m.modules.fct_module_for_key("skill-1"), Some("rovo:skill"));
+    }
+
+    #[test]
+    fn fct_module_for_key_returns_none_for_unknown_key() {
+        let json = r#"{
+            "app": { "name": "A", "id": "a" },
+            "modules": { "jira:issuePanel": [ { "key": "panel-1", "function": "f" } ] }
+        }"#;
+        let m: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
+        assert_eq!(m.modules.fct_module_for_key("nope"), None);
+    }
+
+    #[test]
+    fn fct_module_for_key_resolves_a_key_from_every_product_namespace() {
+        // Guards against registry drift: one representative module per product
+        // namespace present in the `fct_modules!` registry must resolve to its
+        // fully-qualified extensionType. If a namespace is dropped from the
+        // registry, its assertion here fails.
+        let json = r#"{
+            "app": { "name": "A", "id": "a" },
+            "modules": {
+                "macro":                            [ { "key": "k-macro",   "function": "f" } ],
+                "compass:adminPage":                [ { "key": "k-compass",  "function": "f" } ],
+                "confluence:globalPage":            [ { "key": "k-conf",     "function": "f" } ],
+                "jira:issuePanel":                  [ { "key": "k-jira",     "function": "f" } ],
+                "jiraServiceManagement:queuePage":  [ { "key": "k-jsm",      "function": "f" } ],
+                "rovo:agent":                       [ { "key": "k-rovo", "name": "n", "prompt": "p" } ]
+            }
+        }"#;
+        let m: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
+
+        let cases = [
+            ("k-macro", "xen:macro"),
+            ("k-compass", "compass:adminPage"),
+            ("k-conf", "confluence:globalPage"),
+            ("k-jira", "jira:issuePanel"),
+            ("k-jsm", "jiraServiceManagement:queuePage"),
+            ("k-rovo", "rovo:agent"),
+        ];
+        for (key, expected) in cases {
+            assert_eq!(
+                m.modules.fct_module_for_key(key),
+                Some(expected),
+                "module key `{key}` should resolve to `{expected}`"
+            );
+        }
+    }
 
     #[test]
     fn test_deserialize() {
@@ -1529,31 +1698,4 @@ permissions:
         assert!(!is_hardcoded_variable("     {{client_secret}}     "));
     }
 
-    #[test]
-    fn fct_module_type_for_key_maps_known_and_unknown() {
-        let json = r#"{
-            "app": { "name": "My App", "id": "my-app" },
-            "modules": {
-                "macro": [
-                    { "key": "my-macro", "function": "macroFn" }
-                ],
-                "jira:globalPage": [
-                    { "key": "my-jira-page", "function": "jiraPageFn" }
-                ]
-            }
-        }"#;
-        let manifest: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
-
-        // Known keys resolve to their declared module type...
-        assert_eq!(
-            manifest.modules.fct_module_type_for_key("my-macro"),
-            Some("macro")
-        );
-        assert_eq!(
-            manifest.modules.fct_module_type_for_key("my-jira-page"),
-            Some("globalPage")
-        );
-        // ...and an unknown key resolves to None.
-        assert_eq!(manifest.modules.fct_module_type_for_key("nope"), None);
-    }
 }

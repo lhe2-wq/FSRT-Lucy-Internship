@@ -67,17 +67,10 @@ Run with `--help` for options.
 ### Configuration
 
 The config is documented inline in
-[`fsrt-remote.toml.example`](fsrt-remote.toml.example). In short: the request
-shape is auto-detected from the module's manifest namespace (Confluence modules
-use the Confluence shape, everything else uses Global), so `product` is an
-optional override only; `site_domain` (the full host, e.g.
-`your-site.atlassian.net`) derives both the gateway URL and the `cloud_id`, the
-latter fetched automatically from the site's public `_edge/tenant_info` endpoint
-(`cloud_id` is never user-configurable); `installation_id` is shared across
-products; and `[auth]` is a
-session cookie (all products) or a Confluence-only API token. Prefer the
-`*_file` auth variants — the real `fsrt-remote.toml`, `session-cookie.txt`, and
-`api-token.txt` are gitignored and must never be committed.
+[`fsrt-remote.toml.example`](fsrt-remote.toml.example). All apps
+(Jira, JSM, Confluence, etc.) mint via the global-app GraphQL request shape; `site_domain` (the full host, e.g.
+`your-site.atlassian.net`) derives both the gateway URL and the `cloud_id`; `installation_id` is required; and
+`[auth]` is a session cookie.
 
 ## Tests
 

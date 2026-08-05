@@ -11,8 +11,8 @@ use forge_loader::manifest::ForgeManifest;
 use tracing::{debug, info};
 
 use crate::mint_common::{
-    MintError, Product, Result, build_auth_headers, build_variables, extract_manifest_context,
-    load_config, load_manifest, mint_fct_jwt, resolve_environment, resolved_product,
+    MintError, Result, build_auth_headers, build_variables, extract_manifest_context, load_config,
+    load_manifest, mint_fct_jwt, resolve_environment,
 };
 
 /// Runs the `mint-fct` flow and returns the minted FCT JWT.
@@ -38,7 +38,6 @@ pub fn run_mint_fct(
     }
 
     let mut config = load_config(config_path)?;
-
     // Derive `cloud_id` from `site_domain` (via `_edge/tenant_info`) when it is
     // not set explicitly in the config.
     config.resolve_cloud_id()?;
@@ -48,23 +47,15 @@ pub fn run_mint_fct(
 
     let mut manifest_ctx = extract_manifest_context(&manifest, module_key)?;
 
-    // The request shape is resolved from the manifest.
-    let product = resolved_product(&config, &manifest_ctx);
-    if config.auth.auth_type == "basic_api_token" && product != Product::Confluence {
-        return Err(MintError::Config(
-            "auth.type=basic_api_token is only supported for the Confluence request shape; \
-             use raw_cookie for global apps"
-                .to_string(),
-        ));
-    }
-
+    // All apps mint via the global-app request shape; `manifest_ctx.product` is
+    // the manifest-declared product identity used to build the context ARI.
     info!(
-        product = %product,
+        product = ?manifest_ctx.product,
         app_id = %manifest_ctx.app_id,
         app_id_bare = %manifest_ctx.app_id_bare,
         app_name = ?manifest_ctx.app_name,
         module_key = ?manifest_ctx.module_key,
-        module_type = ?manifest_ctx.module_type,
+        extension_type = %manifest_ctx.extension_type,
         endpoint = %config.graphql_endpoint(),
         "derived manifest context"
     );
