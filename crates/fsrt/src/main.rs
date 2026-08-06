@@ -130,7 +130,7 @@ pub struct MintFctArgs {
     #[arg(long, default_value = "./fsrt-remote.toml", value_hint = ValueHint::FilePath)]
     config: PathBuf,
 
-    /// Print the rendered GraphQL variables instead of calling the gateway.
+    /// Resolve platform metadata and print variables without sending the mint mutation.
     #[arg(long, default_value_t = false)]
     dry_run: bool,
 
@@ -863,6 +863,27 @@ pub(crate) fn scan_directory<'a>(
     Ok(reporter.into_report())
 }
 
+fn find_manifest_path(app_dir: &Path) -> Result<PathBuf> {
+    ["manifest.yaml", "manifest.yml"]
+        .into_iter()
+        .map(|name| app_dir.join(name))
+        .find(|path| path.exists())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!(
+                    "Could not find manifest.yml or manifest.yaml in {}",
+                    app_dir.display()
+                ),
+            )
+        })
+        .map_err(Into::into)
+}
+
+fn read_manifest_source(app_dir: &Path) -> Result<String> {
+    Ok(fs::read_to_string(find_manifest_path(app_dir)?)?)
+}
+
 fn main() -> Result<()> {
     let mut args = Args::parse();
 
@@ -881,12 +902,18 @@ fn main() -> Result<()> {
         .init();
 
     if let Some(Command::MintFct(mint_args)) = &args.command {
-        match forge_pen_test::run_mint_fct(
-            &mint_args.app_dir,
-            &mint_args.config,
-            &mint_args.module_key,
-            mint_args.dry_run,
-        ) {
+        let mint_result = (|| -> Result<Option<String>> {
+            let manifest_text = read_manifest_source(&mint_args.app_dir)?;
+            let manifest: forge_loader::manifest::ForgeManifest<'_> =
+                serde_yaml::from_str(&manifest_text)?;
+            Ok(forge_pen_test::run_mint_fct(
+                &manifest,
+                &mint_args.config,
+                &mint_args.module_key,
+                mint_args.dry_run,
+            )?)
+        })();
+        match mint_result {
             Ok(Some(jwt)) => println!("{jwt}"),
             Ok(None) => {} // dry run
             Err(err) => {
@@ -904,10 +931,7 @@ fn main() -> Result<()> {
         serde_yaml::from_str(secretdata_file).expect("Failed to deserialize packages");
 
     for dir in dirs {
-        let mut manifest_file = dir.join("manifest.yaml");
-        if !manifest_file.exists() {
-            manifest_file.set_extension("yml");
-        }
+        let manifest_file = find_manifest_path(&dir)?;
         debug!(?manifest_file);
 
         let manifest_text = fs::read_to_string(&manifest_file)?;

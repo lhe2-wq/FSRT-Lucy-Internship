@@ -1,9 +1,8 @@
 //! Forge Context Token (FCT) minting — the `mint-fct` capability.
 //!
-//! CLI parsing lives in `fsrt`; this module owns the orchestration:
-//! load config + manifest, resolve the module/product/environment, and mint
-//! the token. The caller supplies `module_key` (a required `fsrt mint-fct`
-//! positional argument) — there is no manifest auto-detection.
+//! CLI parsing and manifest loading live in `fsrt`; this module owns the
+//! orchestration: load config, resolve the module/product/environment, and mint
+//! the token. The caller supplies the parsed manifest and `module_key`.
 
 use std::path::Path;
 
@@ -12,21 +11,21 @@ use tracing::{debug, info};
 
 use crate::mint_common::{
     MintError, Result, build_auth_headers, build_variables, extract_manifest_context, load_config,
-    load_manifest, mint_fct_jwt, resolve_environment,
+    mint_fct_jwt, resolve_environment,
 };
 
 /// Runs the `mint-fct` flow and returns the minted FCT JWT.
 ///
-/// - `app_dir`     — Forge app directory containing `manifest.yml`/`.yaml`.
+/// - `manifest`    — the parsed Forge manifest.
 /// - `config_path` — path to the `fsrt-remote.toml` config file.
 /// - `module_key`  — required manifest module key to mint the token for.
-/// - `dry_run`     — when `true`, build and return the request variables as a
-///   pretty JSON string instead of calling the GraphQL gateway.
+/// - `dry_run`     — when `true`, resolve platform metadata and print the request
+///   variables without sending the FCT mint mutation.
 ///
 /// On success returns `Ok(Some(jwt))` for a real mint, or `Ok(None)` for a dry
 /// run (the rendered variables are printed to stdout).
 pub fn run_mint_fct(
-    app_dir: &Path,
+    manifest: &ForgeManifest<'_>,
     config_path: &Path,
     module_key: &str,
     dry_run: bool,
@@ -42,10 +41,7 @@ pub fn run_mint_fct(
     // not set explicitly in the config.
     config.resolve_cloud_id()?;
 
-    let manifest_text = load_manifest(app_dir)?;
-    let manifest: ForgeManifest<'_> = serde_yaml::from_str(&manifest_text)?;
-
-    let mut manifest_ctx = extract_manifest_context(&manifest, module_key)?;
+    let mut manifest_ctx = extract_manifest_context(manifest, module_key)?;
 
     // All apps mint via the global-app request shape; `manifest_ctx.product` is
     // the manifest-declared product identity used to build the context ARI.
@@ -68,7 +64,7 @@ pub fn run_mint_fct(
         let variables = build_variables(&config, &manifest_ctx)?;
         let pretty =
             serde_json::to_string_pretty(&variables).unwrap_or_else(|_| variables.to_string());
-        info!("dry run requested — not sending GraphQL request");
+        info!("dry run requested — not sending FCT mint mutation");
         println!("{pretty}");
         return Ok(None);
     }
@@ -84,9 +80,9 @@ mod tests {
 
     #[test]
     fn run_mint_fct_rejects_empty_module_key() {
+        let manifest = ForgeManifest::default();
         for key in ["", "   "] {
-            let err =
-                run_mint_fct(Path::new("."), Path::new("./nope.toml"), key, true).unwrap_err();
+            let err = run_mint_fct(&manifest, Path::new("./nope.toml"), key, true).unwrap_err();
             assert!(matches!(err, MintError::Config(_)), "got: {err:?}");
             assert!(err.to_string().contains("module_key"));
         }

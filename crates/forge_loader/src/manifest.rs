@@ -1697,5 +1697,4 @@ permissions:
         assert!(!is_hardcoded_variable("{{prefix}}_{{suffix}}"));
         assert!(!is_hardcoded_variable("     {{client_secret}}     "));
     }
-
 }

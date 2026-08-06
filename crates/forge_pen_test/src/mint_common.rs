@@ -12,7 +12,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
 
 use forge_loader::manifest::ForgeManifest;
 use tracing::{info, warn};
@@ -48,9 +47,6 @@ pub enum MintError {
 
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
-
-    #[error("YAML parse error: {0}")]
-    Yaml(#[from] serde_yaml::Error),
 
     #[error("config error: {0}")]
     ConfigCrate(#[from] config::ConfigError),
@@ -222,9 +218,6 @@ impl MintFctConfig {
     }
 }
 
-// Session-cookie auth is the only supported method. Provide either the inline
-// value or a path to a file containing it. `deny_unknown_fields` rejects removed
-// keys such as `type`, `email`, and `api_token` with a clear error.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AuthConfig {
@@ -527,44 +520,73 @@ pub fn get_path<'a>(context: &'a JsonValue, path: &str) -> Option<&'a JsonValue>
 // Overall HTTP timeout for GraphQL gateway calls, so a hung server can't block the CLI.
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-// Fetches the site's `cloudId` from the public `_edge/tenant_info` endpoint.
-pub fn fetch_cloud_id(tenant_info_endpoint: &str) -> Result<String> {
-    let response = match ureq::get(tenant_info_endpoint)
-        .timeout(REQUEST_TIMEOUT)
-        .call()
-    {
-        Ok(response) => response,
-        Err(ureq::Error::Status(code, response)) => {
-            let text = response
-                .into_string()
-                .unwrap_or_else(|_| "<unreadable response body>".to_string());
-            return Err(MintError::Config(format!(
-                "failed to derive cloud_id: {tenant_info_endpoint} returned HTTP {code}. \
-                 Check that `site_domain` is correct and reachable.\n\
-                 Response body: {text}"
-            )));
-        }
-        Err(e) => return Err(MintError::Http(e.to_string())),
-    };
+// A ureq Agent configured with our request timeout, callers can read body for diagnostics.
+fn http_agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(REQUEST_TIMEOUT))
+        .http_status_as_error(false)
+        .build()
+        .into()
+}
 
-    let body = response
-        .into_string()
+pub fn fetch_cloud_id(tenant_info_endpoint: &str) -> Result<String> {
+    #[derive(Deserialize)]
+    struct TenantInfo {
+        #[serde(rename = "cloudId")]
+        cloud_id: Option<String>,
+    }
+
+    let mut response = http_agent()
+        .get(tenant_info_endpoint)
+        .call()
         .map_err(|e| MintError::Http(e.to_string()))?;
 
-    let parsed: JsonValue = serde_json::from_str(&body).map_err(MintError::Json)?;
+    let status = response.status();
+    if status.as_u16() >= 400 {
+        let text = response
+            .body_mut()
+            .read_to_string()
+            .unwrap_or_else(|_| "<unreadable response body>".to_string());
+        return Err(MintError::Config(format!(
+            "failed to derive cloud_id: {tenant_info_endpoint} returned HTTP {status}. \
+             Check that `site_domain` is correct and reachable.\n\
+             Response body: {text}"
+        )));
+    }
 
-    parsed
-        .get("cloudId")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
+    let info: TenantInfo = response
+        .body_mut()
+        .read_json()
+        .map_err(|e| MintError::Http(e.to_string()))?;
+
+    info.cloud_id
         .filter(|s| !s.trim().is_empty())
         .ok_or_else(|| {
             MintError::Config(format!(
                 "failed to derive cloud_id: no `cloudId` field in response from \
-                 {tenant_info_endpoint}. Check that `site_domain` is correct.\n\
-                 Response body: {body}"
+                 {tenant_info_endpoint}. Check that `site_domain` is correct."
             ))
         })
+}
+
+fn graphql_request(
+    endpoint: &str,
+    auth_headers: &HashMap<String, String>,
+) -> ureq::RequestBuilder<ureq::typestate::WithBody> {
+    let origin = endpoint.split('/').take(3).collect::<Vec<_>>().join("/");
+    let mut request = http_agent().post(endpoint).header("Origin", &origin);
+    for (name, value) in auth_headers {
+        request = request.header(name, value);
+    }
+    request
+}
+
+fn graphql_body(operation_name: &str, query: &str, variables: &JsonValue) -> JsonValue {
+    serde_json::json!({
+        "operationName": operation_name,
+        "query": query,
+        "variables": variables,
+    })
 }
 
 pub fn post_graphql(
@@ -574,39 +596,37 @@ pub fn post_graphql(
     query: &str,
     variables: &JsonValue,
 ) -> Result<(u16, String)> {
-    let origin = endpoint.split('/').take(3).collect::<Vec<_>>().join("/");
+    let body = graphql_body(operation_name, query, variables);
 
-    let url = endpoint.to_string();
+    let mut response = graphql_request(endpoint, auth_headers)
+        .send_json(&body)
+        .map_err(|e| MintError::Http(e.to_string()))?;
 
-    let body = serde_json::json!({
-        "operationName": operation_name,
-        "query": query,
-        "variables": variables,
-    });
+    let status = response.status().as_u16();
+    let text = response
+        .body_mut()
+        .read_to_string()
+        .map_err(|e| MintError::Http(e.to_string()))?;
+    Ok((status, text))
+}
 
-    let mut request = ureq::post(&url)
-        .timeout(REQUEST_TIMEOUT)
-        .set("Origin", &origin);
-    for (name, value) in auth_headers {
-        request = request.set(name, value);
+pub fn post_graphql_json<T: serde::de::DeserializeOwned>(
+    endpoint: &str,
+    operation_name: &str,
+    auth_headers: &HashMap<String, String>,
+    query: &str,
+    variables: &JsonValue,
+) -> Result<(u16, T)> {
+    let (status, text) = post_graphql(endpoint, operation_name, auth_headers, query, variables)?;
+    if status >= 400 {
+        return Err(MintError::Http(format!(
+            "{operation_name} returned HTTP {status}. Response body: {text}"
+        )));
     }
 
-    match request.send_json(&body) {
-        Ok(response) => {
-            let status = response.status();
-            let text = response
-                .into_string()
-                .map_err(|e| MintError::Http(e.to_string()))?;
-            Ok((status, text))
-        }
-        Err(ureq::Error::Status(code, response)) => {
-            let text = response
-                .into_string()
-                .unwrap_or_else(|_| "<unreadable response body>".to_string());
-            Ok((code, text))
-        }
-        Err(e) => Err(MintError::Http(e.to_string())),
-    }
+    let parsed = serde_json::from_str(&text)
+        .map_err(|e| MintError::Http(format!("{operation_name} returned invalid JSON: {e}")))?;
+    Ok((status, parsed))
 }
 
 pub fn load_config(config_path: &std::path::Path) -> Result<MintFctConfig> {
@@ -621,8 +641,6 @@ pub fn load_config(config_path: &std::path::Path) -> Result<MintFctConfig> {
         .add_source(config::File::from(config_path))
         .build()?;
 
-    // Deserialise the file-facing struct, validate user input, then convert to
-    // the runtime config.
     let file_cfg: FsrtRemoteConfig = settings.try_deserialize()?;
     file_cfg.validate()?;
     MintFctConfig::try_from(file_cfg)
@@ -653,6 +671,86 @@ pub struct AppEnvironment {
     pub app_version: Option<String>,
 }
 
+fn deserialize_null_vec<'de, D, T>(deserializer: D) -> std::result::Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+// Typed view of the `globalApp_signForgeContextTokens` mutation response.
+#[derive(Debug, Deserialize, Serialize)]
+struct FctResponse {
+    data: Option<FctData>,
+    #[serde(default, deserialize_with = "deserialize_null_vec")]
+    errors: Vec<GraphqlError>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct FctData {
+    #[serde(rename = "globalApp_signForgeContextTokens")]
+    result: Option<FctResult>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct FctResult {
+    #[serde(default)]
+    success: bool,
+    #[serde(default, deserialize_with = "deserialize_null_vec")]
+    errors: Vec<GraphqlError>,
+    #[serde(default, deserialize_with = "deserialize_null_vec")]
+    tokens: Vec<FctToken>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct GraphqlError {
+    message: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct FctToken {
+    jwt: Option<String>,
+}
+
+// Typed view of the `GetAppEnvironment` GraphQL response.
+#[derive(Debug, Deserialize, Serialize)]
+struct AppEnvResponse {
+    data: Option<AppEnvData>,
+    #[serde(default, deserialize_with = "deserialize_null_vec")]
+    errors: Vec<GraphqlError>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct AppEnvData {
+    app: Option<AppNode>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct AppNode {
+    #[serde(rename = "environmentByKey")]
+    environment_by_key: Option<EnvironmentNode>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct EnvironmentNode {
+    id: Option<String>,
+    versions: Option<VersionsConnection>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct VersionsConnection {
+    #[serde(default, deserialize_with = "deserialize_null_vec")]
+    nodes: Vec<VersionNode>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct VersionNode {
+    version: Option<String>,
+    #[serde(default, rename = "isLatest")]
+    is_latest: bool,
+}
+
 pub fn fetch_app_environment(
     endpoint: &str,
     auth_headers: &HashMap<String, String>,
@@ -664,7 +762,7 @@ pub fn fetch_app_environment(
         "envKey": env_key,
     });
 
-    let (status, body) = post_graphql(
+    let (status, parsed): (u16, AppEnvResponse) = post_graphql_json(
         endpoint,
         APP_ENVIRONMENT_OPERATION_NAME,
         auth_headers,
@@ -672,43 +770,32 @@ pub fn fetch_app_environment(
         &variables,
     )?;
 
-    let parsed: JsonValue = serde_json::from_str(&body).map_err(MintError::Json)?;
+    let response = serde_json::to_string(&parsed)
+        .unwrap_or_else(|_| "<unserializable typed response>".to_string());
+    let unresolved = || {
+        MintError::Config(format!(
+            "Could not resolve environment '{env_key}' for app {app_id} (HTTP {status}). \
+             Check the environment key, or set environment_id explicitly in the config.\n\
+             Parsed response: {response}"
+        ))
+    };
 
     let env = parsed
-        .get("data")
-        .and_then(|d| d.get("app"))
-        .and_then(|a| a.get("environmentByKey"));
+        .data
+        .and_then(|d| d.app)
+        .and_then(|a| a.environment_by_key)
+        .ok_or_else(unresolved)?;
 
-    let environment_id = env
-        .and_then(|e| e.get("id"))
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            MintError::Config(format!(
-                "Could not resolve environment '{}' for app {} (HTTP {}). \
-                 Check the environment key, or set environment_id explicitly in the config.\n\
-                 Response body: {}",
-                env_key, app_id, status, body
-            ))
-        })?
-        .to_string();
+    let environment_id = env.id.ok_or_else(unresolved)?;
 
-    let app_version = env
-        .and_then(|e| e.get("versions"))
-        .and_then(|v| v.get("nodes"))
-        .and_then(|n| n.as_array())
-        .and_then(|nodes| {
-            nodes
-                .iter()
-                .find(|node| {
-                    node.get("isLatest")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false)
-                })
-                .or_else(|| nodes.first())
-        })
-        .and_then(|node| node.get("version"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+    let app_version = env.versions.and_then(|versions| {
+        versions
+            .nodes
+            .iter()
+            .find(|node| node.is_latest)
+            .or_else(|| versions.nodes.first())
+            .and_then(|node| node.version.clone())
+    });
 
     Ok(AppEnvironment {
         environment_id,
@@ -758,21 +845,6 @@ pub fn resolve_environment(
     manifest_ctx.app_version = app_env.app_version;
 
     Ok(())
-}
-
-pub fn load_manifest(app_dir: &Path) -> Result<String> {
-    let mut manifest_path = app_dir.join("manifest.yaml");
-    if !manifest_path.exists() {
-        manifest_path = app_dir.join("manifest.yml");
-    }
-    if !manifest_path.exists() {
-        return Err(MintError::Config(format!(
-            "Could not find manifest.yml or manifest.yaml in {}",
-            app_dir.display()
-        )));
-    }
-
-    Ok(fs::read_to_string(&manifest_path)?)
 }
 
 pub fn build_variables(
@@ -846,11 +918,7 @@ pub fn mint_fct_jwt_opts(
     auth_headers: &HashMap<String, String>,
     quiet: bool,
 ) -> Result<String> {
-    let (query, operation_name, response_key) = (
-        DEFAULT_GLOBAL_APP_MUTATION,
-        GLOBAL_APP_OPERATION_NAME,
-        "globalApp_signForgeContextTokens",
-    );
+    let (query, operation_name) = (DEFAULT_GLOBAL_APP_MUTATION, GLOBAL_APP_OPERATION_NAME);
 
     let variables = build_variables(config, manifest_ctx)?;
 
@@ -870,52 +938,55 @@ pub fn mint_fct_jwt_opts(
         &variables,
     )?;
 
-    let parsed: JsonValue = serde_json::from_str(&body).map_err(|e| {
+    if !quiet {
+        info!(http_status = status, response = %body, "FCT GraphQL response");
+    }
+    if status >= 400 {
+        return Err(MintError::Http(format!(
+            "{operation_name} returned HTTP {status}. Response body: {body}"
+        )));
+    }
+
+    // Parse the response into typed structs once.
+    let parsed: FctResponse = serde_json::from_str(&body).map_err(|e| {
         warn!(response_body = %body, "FCT response was not valid JSON");
         MintError::Json(e)
     })?;
-    if !quiet {
-        info!(
-            http_status = status,
-            response = %serde_json::to_string_pretty(&parsed).unwrap_or_default(),
-            "FCT GraphQL response"
-        );
-    }
 
-    let fct_obj = parsed.get("data").and_then(|d| d.get(response_key));
+    let result = parsed.data.and_then(|d| d.result).ok_or_else(|| {
+        let messages = parsed
+            .errors
+            .into_iter()
+            .filter_map(|error| error.message)
+            .collect::<Vec<_>>();
+        let detail = if messages.is_empty() {
+            "response missing data.globalApp_signForgeContextTokens".to_string()
+        } else {
+            format!("GraphQL errors: {}", messages.join("; "))
+        };
+        MintError::FctFailed(detail)
+    })?;
 
-    let success = fct_obj
-        .and_then(|o| o.get("success"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    if !result.success {
+        let messages: Vec<String> = result
+            .errors
+            .into_iter()
+            .filter_map(|e| e.message)
+            .collect();
 
-    if !success {
-        let errors: Vec<&str> = fct_obj
-            .and_then(|o| o.get("errors"))
-            .and_then(|e| e.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|e| e.get("message").and_then(|m| m.as_str()))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        return Err(MintError::FctFailed(if errors.is_empty() {
+        return Err(MintError::FctFailed(if messages.is_empty() {
             "Server returned success=false with no error messages".to_string()
         } else {
-            errors.join("; ")
+            messages.join("; ")
         }));
     }
 
-    let jwt = fct_obj
-        .and_then(|o| o.get("tokens"))
-        .and_then(|t| t.as_array())
-        .and_then(|arr| arr.first())
-        .and_then(|t| t.get("jwt"))
-        .and_then(|j| j.as_str())
-        .ok_or_else(|| MintError::FctFailed("tokens[0].jwt missing from response".to_string()))?;
-
-    Ok(jwt.to_string())
+    result
+        .tokens
+        .into_iter()
+        .next()
+        .and_then(|t| t.jwt)
+        .ok_or_else(|| MintError::FctFailed("tokens[0].jwt missing from response".to_string()))
 }
 
 // Tests
@@ -1163,29 +1234,60 @@ mod tests {
         assert_eq!(cfg.cloud_id.as_deref(), Some("already-derived"));
     }
 
-    // Writes `toml` to a temp file and loads it via the production `load_config`.
-    fn load_config_from_toml(toml: &str) -> Result<MintFctConfig> {
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!(
-            "tmp_rovo_fsrt_cfg_{}_{}.toml",
-            std::process::id(),
-            // avoid collisions between tests in the same process
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-        std::fs::write(&path, toml).unwrap();
-        let cfg = load_config(&path);
-        let _ = std::fs::remove_file(&path); // best-effort cleanup
-        cfg
+    #[test]
+    fn fct_response_arrays_accept_null() {
+        let fct: FctResponse = serde_json::from_value(json!({
+            "data": {
+                "globalApp_signForgeContextTokens": {
+                    "success": false,
+                    "errors": null,
+                    "tokens": null
+                }
+            },
+            "errors": null
+        }))
+        .unwrap();
+        assert!(fct.errors.is_empty());
+        let result = fct.data.unwrap().result.unwrap();
+        assert!(result.errors.is_empty());
+        assert!(result.tokens.is_empty());
+    }
+
+    #[test]
+    fn app_environment_response_arrays_accept_null() {
+        let app_env: AppEnvResponse = serde_json::from_value(json!({
+            "data": {
+                "app": {
+                    "environmentByKey": {
+                        "id": "env-1",
+                        "versions": { "nodes": null }
+                    }
+                }
+            },
+            "errors": null
+        }))
+        .unwrap();
+        assert!(app_env.errors.is_empty());
+        let nodes = app_env
+            .data
+            .unwrap()
+            .app
+            .unwrap()
+            .environment_by_key
+            .unwrap()
+            .versions
+            .unwrap()
+            .nodes;
+        assert!(nodes.is_empty());
     }
 
     #[test]
     fn config_file_valid_minimal_loads() {
+        let file = tempfile::Builder::new().suffix(".toml").tempfile().unwrap();
         // A minimal valid config (cookie auth, no removed keys) loads cleanly and
         // leaves cloud_id unset for runtime derivation.
-        let cfg = load_config_from_toml(
+        std::fs::write(
+            file.path(),
             r#"
 site_domain = "example.atlassian.net"
 installation_id = "inst-123"
@@ -1194,7 +1296,9 @@ installation_id = "inst-123"
 raw_cookie = "tenant.session.token=a.b.c"
 "#,
         )
-        .expect("minimal config should load");
+        .unwrap();
+        let cfg = load_config(file.path()).expect("minimal config should load");
+
         assert_eq!(cfg.cloud_id, None);
         assert_eq!(cfg.installation_id, "inst-123");
     }
@@ -1202,8 +1306,9 @@ raw_cookie = "tenant.session.token=a.b.c"
     #[test]
     fn config_file_rejects_cloud_id_key() {
         // cloud_id is not user-configurable; deny_unknown_fields rejects it.
-        let err = load_config_from_toml(
-            r#"
+        let err = config::Config::builder()
+            .add_source(config::File::from_str(
+                r#"
 site_domain = "example.atlassian.net"
 cloud_id = "should-be-rejected"
 installation_id = "inst-123"
@@ -1211,9 +1316,13 @@ installation_id = "inst-123"
 [auth]
 raw_cookie = "tenant.session.token=a.b.c"
 "#,
-        )
-        .unwrap_err()
-        .to_string();
+                config::FileFormat::Toml,
+            ))
+            .build()
+            .unwrap()
+            .try_deserialize::<FsrtRemoteConfig>()
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("cloud_id"), "got: {err}");
     }
 
@@ -1221,8 +1330,9 @@ raw_cookie = "tenant.session.token=a.b.c"
     fn config_file_rejects_removed_keys() {
         // Removed keys must fail to parse rather than be silently ignored.
         // `product` at the top level.
-        let err = load_config_from_toml(
-            r#"
+        let err = config::Config::builder()
+            .add_source(config::File::from_str(
+                r#"
 site_domain = "example.atlassian.net"
 installation_id = "inst-123"
 product = "global"
@@ -1230,14 +1340,19 @@ product = "global"
 [auth]
 raw_cookie = "tenant.session.token=a.b.c"
 "#,
-        )
-        .unwrap_err()
-        .to_string();
+                config::FileFormat::Toml,
+            ))
+            .build()
+            .unwrap()
+            .try_deserialize::<FsrtRemoteConfig>()
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("product"), "got: {err}");
 
         // `type` inside [auth].
-        let err = load_config_from_toml(
-            r#"
+        let err = config::Config::builder()
+            .add_source(config::File::from_str(
+                r#"
 site_domain = "example.atlassian.net"
 installation_id = "inst-123"
 
@@ -1245,9 +1360,13 @@ installation_id = "inst-123"
 type = "raw_cookie"
 raw_cookie = "tenant.session.token=a.b.c"
 "#,
-        )
-        .unwrap_err()
-        .to_string();
+                config::FileFormat::Toml,
+            ))
+            .build()
+            .unwrap()
+            .try_deserialize::<FsrtRemoteConfig>()
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("type"), "got: {err}");
     }
 
@@ -1267,8 +1386,9 @@ raw_cookie = "tenant.session.token=a.b.c"
 
     #[test]
     fn config_file_rejects_module_key() {
-        let err = load_config_from_toml(
-            r#"
+        let err = config::Config::builder()
+            .add_source(config::File::from_str(
+                r#"
 site_domain = "example.atlassian.net"
 installation_id = "inst-123"
 module_key = "manifest-is-the-source-of-truth"
@@ -1276,9 +1396,13 @@ module_key = "manifest-is-the-source-of-truth"
 [auth]
 raw_cookie = "tenant.session.token=a.b.c"
 "#,
-        )
-        .unwrap_err()
-        .to_string();
+                config::FileFormat::Toml,
+            ))
+            .build()
+            .unwrap()
+            .try_deserialize::<FsrtRemoteConfig>()
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("module_key"), "got: {err}");
     }
 
