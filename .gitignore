@@ -4,4 +4,3 @@
 # Local secrets & minting config
 fsrt-remote.toml
 session-cookie.txt
-api-token.txt

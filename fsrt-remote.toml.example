@@ -8,9 +8,19 @@
 # The GraphQL gateway URL is derived from this automatically.
 site_domain = "your-site.domain.net"
 
+# Product/resource owner used for the site context ARI.
+# Supported values: "automation", "chat", "compass", "confluence", "core",
+# "directory", "global", "graph", "jira", "jira-core",
+# "jira-customer-service", "jira-product-discovery", "jira-servicedesk",
+# "jira-software", and "rovo".
+# Produces: ari:cloud:<product>::site/<cloud_id>
+product = "jira"
+
 # --- App/site IDs ------------------------------------------------------------
 # cloud_id is omitted, derived automatically from site_domain via tenant-info endpoint.
 installation_id = "00000000-0000-0000-0000-000000000000"
+# Set an exact named environment to override automatic selection. When omitted,
+# FSRT tries "production" and falls back to "default" only if production is absent.
 # environment_key = "production"
 
 # --- Auth --------------------------------------------------------------------

@@ -59,6 +59,12 @@ pub enum MintError {
     #[error("FCT minting failed: {0}")]
     FctFailed(String),
 
+    #[error("environment '{environment_key}' was not found for app {app_id}")]
+    EnvironmentNotFound {
+        environment_key: String,
+        app_id: String,
+    },
+
     #[error("{0}")]
     CookieExpired(String),
 }
@@ -77,11 +83,14 @@ pub struct FsrtRemoteConfig {
     // Auth credentials — how to authenticate the HTTP request.
     pub auth: AuthConfig,
 
+    // Product/resource owner used to construct the site context ARI.
+    pub product: FctProduct,
+
     // App/site IDs.
     pub installation_id: String, // required for now but will be changed in future pr
-    pub environment_id: Option<String>,
     pub environment_type: Option<String>,
-    // Forge environment slot used to look up the environment id.
+    // Optional Forge environment slot used to look up both the environment id
+    // and deployed app version. When omitted, selection is automatic.
     pub environment_key: Option<String>,
 }
 
@@ -99,6 +108,16 @@ impl FsrtRemoteConfig {
         // so this only needs to reject an empty / whitespace-only value.
         if self.installation_id.trim().is_empty() {
             missing.push("installation_id");
+        }
+
+        if self
+            .environment_key
+            .as_deref()
+            .is_some_and(|key| key.trim().is_empty())
+        {
+            return Err(MintError::Config(
+                "environment_key must not be empty when specified".into(),
+            ));
         }
 
         if missing.is_empty() {
@@ -121,12 +140,14 @@ pub struct MintFctConfig {
     // Auth credentials — how to authenticate the HTTP request.
     pub auth: AuthConfig,
 
+    // Product/resource owner used to construct the site context ARI.
+    pub product: FctProduct,
+
     // Derived at runtime (never from the config file) via `resolve_cloud_id`.
     pub cloud_id: Option<String>,
 
     // App/site IDs and environment selectors, carried over from the file config.
     pub installation_id: String,
-    pub environment_id: Option<String>,
     pub environment_type: Option<String>,
     pub environment_key: Option<String>,
 }
@@ -140,9 +161,9 @@ impl TryFrom<FsrtRemoteConfig> for MintFctConfig {
         Ok(MintFctConfig {
             site_domain,
             auth: file.auth,
+            product: file.product,
             cloud_id: None,
             installation_id: file.installation_id,
-            environment_id: file.environment_id,
             environment_type: file.environment_type,
             environment_key: file.environment_key,
         })
@@ -225,43 +246,108 @@ pub struct AuthConfig {
     pub raw_cookie_file: Option<String>,
 }
 
-// The Atlassian product an FCT is being minted for.
-// ASK JOSH: what other products are there, and what is the easiest way to get an ARI?
-// context_ari hardcodes pattern
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// The product/resource owner used in the FCT context ARI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 pub enum FctProduct {
+    #[serde(rename = "automation")]
+    Automation,
+    #[serde(rename = "chat")]
+    Chat,
+    #[serde(rename = "compass")]
+    Compass,
+    #[serde(rename = "confluence")]
     Confluence,
+    #[serde(rename = "core")]
+    Core,
+    #[serde(rename = "directory")]
+    Directory,
+    #[serde(rename = "global")]
+    Global,
+    #[serde(rename = "graph")]
+    Graph,
+    #[serde(rename = "jira")]
     Jira,
-    JiraServiceManagement,
+    #[serde(rename = "jira-core")]
+    JiraCore,
+    #[serde(rename = "jira-customer-service")]
+    JiraCustomerService,
+    #[serde(rename = "jira-product-discovery")]
+    JiraProductDiscovery,
+    #[serde(rename = "jira-servicedesk")]
+    JiraServicedesk,
+    #[serde(rename = "jira-software")]
+    JiraSoftware,
+    #[serde(rename = "rovo")]
+    Rovo,
 }
 
 impl FctProduct {
-    // Maps a manifest product-namespace prefix or `None` if unrecognised.
-    fn from_manifest_prefix(prefix: &str) -> Option<Self> {
-        match prefix {
-            "confluence" => Some(FctProduct::Confluence),
-            "jira" => Some(FctProduct::Jira),
-            "jiraServiceManagement" => Some(FctProduct::JiraServiceManagement),
-            _ => None,
-        }
-    }
-
-    // The site context ARI resource-owner segment.
-    //
-    // NOTE: Update for other products like Bitbucket:
-    // it uses a *workspace* ARI (`ari:cloud:bitbucket::workspace/<workspaceId>`).
-    fn ari_owner(self) -> &'static str {
+    fn as_str(self) -> &'static str {
         match self {
+            FctProduct::Automation => "automation",
+            FctProduct::Chat => "chat",
+            FctProduct::Compass => "compass",
             FctProduct::Confluence => "confluence",
+            FctProduct::Core => "core",
+            FctProduct::Directory => "directory",
+            FctProduct::Global => "global",
+            FctProduct::Graph => "graph",
             FctProduct::Jira => "jira",
-            FctProduct::JiraServiceManagement => "jira-servicedesk",
+            FctProduct::JiraCore => "jira-core",
+            FctProduct::JiraCustomerService => "jira-customer-service",
+            FctProduct::JiraProductDiscovery => "jira-product-discovery",
+            FctProduct::JiraServicedesk => "jira-servicedesk",
+            FctProduct::JiraSoftware => "jira-software",
+            FctProduct::Rovo => "rovo",
         }
     }
 
-    // Builds the site-scoped context ARI carried in the global-app FCT request's
-    // `contextIds`.
-    fn context_ari(self, cloud_id: &str) -> String {
-        format!("ari:cloud:{}::site/{cloud_id}", self.ari_owner())
+    fn matches_extension_type(self, extension_type: &str) -> bool {
+        match self {
+            FctProduct::Automation => extension_type.starts_with("automation:"),
+            FctProduct::Chat => extension_type.starts_with("chat:"),
+            FctProduct::Compass => extension_type.starts_with("compass:"),
+            FctProduct::Confluence => {
+                extension_type == "xen:macro" || extension_type.starts_with("confluence:")
+            }
+            FctProduct::Core => extension_type.starts_with("core:"),
+            FctProduct::Directory => extension_type.starts_with("directory:"),
+            FctProduct::Global => extension_type.starts_with("global:"),
+            FctProduct::Graph => extension_type.starts_with("graph:"),
+            FctProduct::Jira
+            | FctProduct::JiraCore
+            | FctProduct::JiraProductDiscovery
+            | FctProduct::JiraSoftware => extension_type.starts_with("jira:"),
+            FctProduct::JiraCustomerService => {
+                extension_type.starts_with("customerServiceManagement:")
+            }
+            FctProduct::JiraServicedesk => extension_type.starts_with("jiraServiceManagement:"),
+            FctProduct::Rovo => extension_type.starts_with("rovo:"),
+        }
+    }
+
+    pub(crate) fn validate_manifest_module(
+        self,
+        module_key: &str,
+        extension_type: &str,
+    ) -> Result<()> {
+        if self.matches_extension_type(extension_type) {
+            return Ok(());
+        }
+
+        Err(MintError::Config(format!(
+            "configured product '{}' does not match module '{}' with extension type '{}'. \
+             Set `product` in fsrt-remote.toml to the module's product resource owner",
+            self.as_str(),
+            module_key,
+            extension_type
+        )))
+    }
+}
+
+impl std::fmt::Display for FctProduct {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
     }
 }
 
@@ -276,8 +362,6 @@ pub struct ManifestContext {
     pub module_key: Option<String>,
     // Full FCT `extensionType` (e.g. "jira:issuePanel"; "xen:macro" for macros).
     pub extension_type: String,
-    // Product that declared the module, resolved from the manifest key prefix.
-    pub product: FctProduct,
     // Resolved from the Forge platform via fetch_app_environment().
     pub environment_id: Option<String>,
     pub app_version: Option<String>,
@@ -313,27 +397,12 @@ pub fn extract_manifest_context(
         ))
     })?;
 
-    // Recover the product namespace from the extensionType for the context ARI.
-    let product_prefix = if extension_type == "xen:macro" {
-        "confluence" // special cases for Confluence macro
-    } else {
-        extension_type.split(':').next().unwrap_or_default()
-    };
-
-    let product = FctProduct::from_manifest_prefix(product_prefix).ok_or_else(|| {
-        MintError::Config(format!(
-            "module '{module_key}' belongs to product namespace '{product_prefix}', \
-             which is not supported for FCT minting"
-        ))
-    })?;
-
     Ok(ManifestContext {
         app_id,
         app_id_bare,
         app_name,
         module_key: Some(module_key.to_string()),
         extension_type: extension_type.to_owned(),
-        product,
         environment_id: None,
         app_version: None,
     })
@@ -668,7 +737,7 @@ pub const APP_ENVIRONMENT_OPERATION_NAME: &str = "GetAppEnvironment";
 #[derive(Debug, Clone)]
 pub struct AppEnvironment {
     pub environment_id: String,
-    pub app_version: Option<String>,
+    pub app_version: String,
 }
 
 fn deserialize_null_vec<'de, D, T>(deserializer: D) -> std::result::Result<Vec<T>, D::Error>
@@ -770,32 +839,70 @@ pub fn fetch_app_environment(
         &variables,
     )?;
 
+    parse_app_environment_response(status, parsed, app_id, env_key)
+}
+
+fn parse_app_environment_response(
+    status: u16,
+    parsed: AppEnvResponse,
+    app_id: &str,
+    env_key: &str,
+) -> Result<AppEnvironment> {
     let response = serde_json::to_string(&parsed)
         .unwrap_or_else(|_| "<unserializable typed response>".to_string());
-    let unresolved = || {
+    let AppEnvResponse { data, errors } = parsed;
+
+    if !errors.is_empty() {
+        let messages = errors
+            .into_iter()
+            .filter_map(|error| error.message)
+            .collect::<Vec<_>>();
+        let detail = if messages.is_empty() {
+            response.clone()
+        } else {
+            messages.join("; ")
+        };
+        return Err(MintError::Config(format!(
+            "Could not query environment '{env_key}' for app {app_id} (HTTP {status}): {detail}"
+        )));
+    }
+
+    let app = data.and_then(|data| data.app).ok_or_else(|| {
         MintError::Config(format!(
-            "Could not resolve environment '{env_key}' for app {app_id} (HTTP {status}). \
-             Check the environment key, or set environment_id explicitly in the config.\n\
-             Parsed response: {response}"
+            "Could not query app {app_id} while resolving environment '{env_key}' \
+             (HTTP {status}). Parsed response: {response}"
         ))
-    };
+    })?;
 
-    let env = parsed
-        .data
-        .and_then(|d| d.app)
-        .and_then(|a| a.environment_by_key)
-        .ok_or_else(unresolved)?;
+    let env = app
+        .environment_by_key
+        .ok_or_else(|| MintError::EnvironmentNotFound {
+            environment_key: env_key.to_string(),
+            app_id: app_id.to_string(),
+        })?;
 
-    let environment_id = env.id.ok_or_else(unresolved)?;
+    let environment_id = env.id.ok_or_else(|| {
+        MintError::Config(format!(
+            "Environment '{env_key}' for app {app_id} returned no environment id"
+        ))
+    })?;
 
-    let app_version = env.versions.and_then(|versions| {
-        versions
-            .nodes
-            .iter()
-            .find(|node| node.is_latest)
-            .or_else(|| versions.nodes.first())
-            .and_then(|node| node.version.clone())
-    });
+    let app_version = env
+        .versions
+        .and_then(|versions| {
+            versions
+                .nodes
+                .iter()
+                .find(|node| node.is_latest)
+                .or_else(|| versions.nodes.first())
+                .and_then(|node| node.version.clone())
+        })
+        .filter(|version| !version.trim().is_empty())
+        .ok_or_else(|| {
+            MintError::Config(format!(
+                "Environment '{env_key}' for app {app_id} has no deployed app version"
+            ))
+        })?;
 
     Ok(AppEnvironment {
         environment_id,
@@ -803,46 +910,39 @@ pub fn fetch_app_environment(
     })
 }
 
+fn select_app_environment<F>(configured_key: Option<&str>, mut fetch: F) -> Result<AppEnvironment>
+where
+    F: FnMut(&str) -> Result<AppEnvironment>,
+{
+    match configured_key {
+        // User-selected key is authoritative.
+        Some(key) => fetch(key),
+        None => match fetch(PRODUCTION_ENVIRONMENT_KEY) {
+            Ok(env) => Ok(env),
+            Err(MintError::EnvironmentNotFound { .. }) => {
+                warn!(
+                    "environment '{}' was not found; falling back to '{}'",
+                    PRODUCTION_ENVIRONMENT_KEY, DEFAULT_ENVIRONMENT_KEY
+                );
+                fetch(DEFAULT_ENVIRONMENT_KEY)
+            }
+            Err(error) => Err(error),
+        },
+    }
+}
+
 pub fn resolve_environment(
     config: &MintFctConfig,
     manifest_ctx: &mut ManifestContext,
     auth_headers: &HashMap<String, String>,
 ) -> Result<()> {
-    if let Some(id) = config.environment_id.clone() {
-        manifest_ctx.environment_id = Some(id);
-        return Ok(());
-    }
-    let env_key = config.environment_key.clone();
-
     let endpoint = config.graphql_endpoint();
-    let app_env = match env_key {
-        Some(key) => fetch_app_environment(&endpoint, auth_headers, &manifest_ctx.app_id, &key)?,
-        None => {
-            match fetch_app_environment(
-                &endpoint,
-                auth_headers,
-                &manifest_ctx.app_id,
-                PRODUCTION_ENVIRONMENT_KEY,
-            ) {
-                Ok(env) => env,
-                Err(prod_err) => {
-                    warn!(
-                        "environment '{}' not resolved ({}); falling back to '{}'",
-                        PRODUCTION_ENVIRONMENT_KEY, prod_err, DEFAULT_ENVIRONMENT_KEY
-                    );
-                    fetch_app_environment(
-                        &endpoint,
-                        auth_headers,
-                        &manifest_ctx.app_id,
-                        DEFAULT_ENVIRONMENT_KEY,
-                    )?
-                }
-            }
-        }
-    };
+    let app_env = select_app_environment(config.environment_key.as_deref(), |key| {
+        fetch_app_environment(&endpoint, auth_headers, &manifest_ctx.app_id, key)
+    })?;
 
     manifest_ctx.environment_id = Some(app_env.environment_id);
-    manifest_ctx.app_version = app_env.app_version;
+    manifest_ctx.app_version = Some(app_env.app_version);
 
     Ok(())
 }
@@ -853,9 +953,6 @@ pub fn build_variables(
 ) -> Result<JsonValue> {
     let config_value =
         serde_json::to_value(config).unwrap_or(JsonValue::Object(Default::default()));
-
-    let cloud_id = config.cloud_id.as_deref().unwrap_or("");
-    let context_ari = manifest_ctx.product.context_ari(cloud_id);
 
     let context = serde_json::json!({
         "manifest": {
@@ -868,13 +965,13 @@ pub fn build_variables(
             "app_version":    manifest_ctx.app_version,
         },
         "config": config_value,
-        "context_ari": context_ari,
     });
 
     let template: JsonValue = serde_json::json!({
         "input": {
-            // Product-resolved at runtime from the manifest.
-            "contextIds": ["${context_ari}"],
+            // `product` is the configured ARI resource owner; all currently
+            // supported products use a cloud-scoped site resource.
+            "contextIds": ["ari:cloud:${config.product}::site/${config.cloud_id}"],
             "unlicensed": false,
             "extensionContexts": [{
                 "appVersion": "${manifest.app_version}",
@@ -1070,7 +1167,6 @@ mod tests {
         assert_eq!(ctx.app_id_bare, "abc-123");
         assert_eq!(ctx.module_key.as_deref(), Some("my-macro"));
         assert_eq!(ctx.extension_type, "xen:macro");
-        assert_eq!(ctx.product, FctProduct::Confluence);
     }
 
     #[test]
@@ -1086,7 +1182,6 @@ mod tests {
         let manifest: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
         let ctx = extract_manifest_context(&manifest, "my-panel").unwrap();
         assert_eq!(ctx.extension_type, "jira:issuePanel");
-        assert_eq!(ctx.product, FctProduct::Jira);
     }
 
     #[test]
@@ -1108,61 +1203,68 @@ mod tests {
     }
 
     #[test]
-    fn context_ari_uses_product_specific_resource_owner() {
-        assert_eq!(
-            FctProduct::Confluence.context_ari("cid"),
-            "ari:cloud:confluence::site/cid"
-        );
-        assert_eq!(
-            FctProduct::Jira.context_ari("cid"),
-            "ari:cloud:jira::site/cid"
-        );
-        // JSM's site resource-owner is `jira-servicedesk` (per gateway
-        // validateForgeContextAri / JiraServicedeskSiteAri), NOT `jira`.
-        assert_eq!(
-            FctProduct::JiraServiceManagement.context_ari("cid"),
-            "ari:cloud:jira-servicedesk::site/cid"
-        );
+    fn configured_product_validates_manifest_extension_type() {
+        for (product, extension_type) in [
+            (FctProduct::Automation, "automation:action"),
+            (FctProduct::Chat, "chat:bot"),
+            (FctProduct::Compass, "compass:adminPage"),
+            (FctProduct::Confluence, "confluence:globalPage"),
+            (FctProduct::Confluence, "xen:macro"),
+            (FctProduct::Core, "core:function"),
+            (FctProduct::Directory, "directory:teamContent"),
+            (FctProduct::Global, "global:fullPage"),
+            (FctProduct::Graph, "graph:connector"),
+            (FctProduct::Jira, "jira:globalPage"),
+            (FctProduct::JiraCore, "jira:globalPage"),
+            (
+                FctProduct::JiraCustomerService,
+                "customerServiceManagement:queuePage",
+            ),
+            (FctProduct::JiraProductDiscovery, "jira:globalPage"),
+            (
+                FctProduct::JiraServicedesk,
+                "jiraServiceManagement:queuePage",
+            ),
+            (FctProduct::JiraSoftware, "jira:globalPage"),
+            (FctProduct::Rovo, "rovo:agent"),
+        ] {
+            product
+                .validate_manifest_module("module-key", extension_type)
+                .unwrap();
+        }
+
+        let err = FctProduct::Jira
+            .validate_manifest_module("conf-macro", "xen:macro")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("configured product 'jira'"), "got: {err}");
+        assert!(err.contains("conf-macro"), "got: {err}");
+        assert!(err.contains("xen:macro"), "got: {err}");
     }
 
     #[test]
-    fn fct_product_maps_manifest_prefix() {
-        assert_eq!(
-            FctProduct::from_manifest_prefix("jiraServiceManagement"),
-            Some(FctProduct::JiraServiceManagement)
-        );
-        assert_eq!(FctProduct::from_manifest_prefix("unknown"), None);
-    }
-
-    #[test]
-    fn extract_manifest_context_resolves_product_from_manifest_prefix() {
-        let json = r#"{
-            "app": { "name": "My App", "id": "ari:cloud:ecosystem::app/abc-123" },
-            "modules": {
-                "macro": [ { "key": "conf-macro", "function": "macroFn" } ],
-                "jira:globalPage": [ { "key": "jira-page", "function": "jiraFn" } ],
-                "jiraServiceManagement:queuePage": [ { "key": "jsm-queue", "function": "jsmFn" } ]
-            }
-        }"#;
-        let manifest: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
-        assert_eq!(
-            extract_manifest_context(&manifest, "conf-macro")
-                .unwrap()
-                .product,
-            FctProduct::Confluence
-        );
-        assert_eq!(
-            extract_manifest_context(&manifest, "jira-page")
-                .unwrap()
-                .product,
-            FctProduct::Jira
-        );
-        assert_eq!(
-            extract_manifest_context(&manifest, "jsm-queue")
-                .unwrap()
-                .product,
-            FctProduct::JiraServiceManagement
-        );
+    fn configured_products_deserialize_and_serialize_as_ari_owners() {
+        for value in [
+            "automation",
+            "chat",
+            "compass",
+            "confluence",
+            "core",
+            "directory",
+            "global",
+            "graph",
+            "jira",
+            "jira-core",
+            "jira-customer-service",
+            "jira-product-discovery",
+            "jira-servicedesk",
+            "jira-software",
+            "rovo",
+        ] {
+            let product: FctProduct =
+                serde_json::from_value(json!(value)).expect("supported product should deserialize");
+            assert_eq!(serde_json::to_value(product).unwrap(), json!(value));
+        }
     }
 
     // Builds a minimal global-app config for build_variables tests.
@@ -1173,9 +1275,9 @@ mod tests {
                 raw_cookie: Some("x".to_string()),
                 raw_cookie_file: None,
             },
+            product: FctProduct::Jira,
             cloud_id: Some(cloud_id.to_string()),
             installation_id: "inst-1".to_string(),
-            environment_id: None,
             environment_type: None,
             environment_key: None,
         }
@@ -1189,10 +1291,17 @@ mod tests {
                 raw_cookie: Some("x".to_string()),
                 raw_cookie_file: None,
             },
+            product: FctProduct::Jira,
             installation_id: "inst-1".to_string(),
-            environment_id: None,
             environment_type: None,
             environment_key: None,
+        }
+    }
+
+    fn app_environment(id: &str, version: &str) -> AppEnvironment {
+        AppEnvironment {
+            environment_id: id.to_string(),
+            app_version: version.to_string(),
         }
     }
 
@@ -1212,6 +1321,11 @@ mod tests {
         cfg.site_domain = "   ".to_string();
         let err = cfg.validate().unwrap_err().to_string();
         assert!(err.contains("site_domain"), "got: {err}");
+
+        let mut cfg = file_config();
+        cfg.environment_key = Some("  ".to_string());
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("environment_key"), "got: {err}");
     }
 
     #[test]
@@ -1221,6 +1335,7 @@ mod tests {
         let cfg = MintFctConfig::try_from(file_config()).unwrap();
         assert_eq!(cfg.cloud_id, None);
         assert_eq!(cfg.site_domain, "example.atlassian.net");
+        assert_eq!(cfg.product, FctProduct::Jira);
         assert_eq!(cfg.installation_id, "inst-1");
     }
 
@@ -1282,6 +1397,79 @@ mod tests {
     }
 
     #[test]
+    fn app_environment_requires_a_deployed_version() {
+        let response: AppEnvResponse = serde_json::from_value(json!({
+            "data": {
+                "app": {
+                    "environmentByKey": {
+                        "id": "env-1",
+                        "versions": { "nodes": [] }
+                    }
+                }
+            },
+            "errors": []
+        }))
+        .unwrap();
+
+        let err = parse_app_environment_response(200, response, "app-1", "staging")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no deployed app version"), "got: {err}");
+    }
+
+    #[test]
+    fn configured_environment_key_is_queried_without_fallback() {
+        let mut queried = Vec::new();
+        let selected = select_app_environment(Some("staging"), |key| {
+            queried.push(key.to_string());
+            Ok(app_environment("env-staging", "2.0.0"))
+        })
+        .unwrap();
+
+        assert_eq!(queried, ["staging"]);
+        assert_eq!(selected.environment_id, "env-staging");
+        assert_eq!(selected.app_version, "2.0.0");
+    }
+
+    #[test]
+    fn automatic_environment_falls_back_only_when_production_is_absent() {
+        let mut queried = Vec::new();
+        let selected = select_app_environment(None, |key| {
+            queried.push(key.to_string());
+            match key {
+                PRODUCTION_ENVIRONMENT_KEY => Err(MintError::EnvironmentNotFound {
+                    environment_key: key.to_string(),
+                    app_id: "app-1".to_string(),
+                }),
+                DEFAULT_ENVIRONMENT_KEY => Ok(app_environment("env-default", "1.0.0")),
+                _ => unreachable!(),
+            }
+        })
+        .unwrap();
+
+        assert_eq!(
+            queried,
+            [PRODUCTION_ENVIRONMENT_KEY, DEFAULT_ENVIRONMENT_KEY]
+        );
+        assert_eq!(selected.environment_id, "env-default");
+        assert_eq!(selected.app_version, "1.0.0");
+    }
+
+    #[test]
+    fn automatic_environment_does_not_hide_production_query_errors() {
+        let mut queried = Vec::new();
+        let err = select_app_environment(None, |key| {
+            queried.push(key.to_string());
+            Err(MintError::Config("permission denied".to_string()))
+        })
+        .unwrap_err()
+        .to_string();
+
+        assert_eq!(queried, [PRODUCTION_ENVIRONMENT_KEY]);
+        assert!(err.contains("permission denied"), "got: {err}");
+    }
+
+    #[test]
     fn config_file_valid_minimal_loads() {
         let file = tempfile::Builder::new().suffix(".toml").tempfile().unwrap();
         // A minimal valid config (cookie auth, no removed keys) loads cleanly and
@@ -1290,6 +1478,7 @@ mod tests {
             file.path(),
             r#"
 site_domain = "example.atlassian.net"
+product = "jira"
 installation_id = "inst-123"
 
 [auth]
@@ -1300,7 +1489,29 @@ raw_cookie = "tenant.session.token=a.b.c"
         let cfg = load_config(file.path()).expect("minimal config should load");
 
         assert_eq!(cfg.cloud_id, None);
+        assert_eq!(cfg.product, FctProduct::Jira);
         assert_eq!(cfg.installation_id, "inst-123");
+    }
+
+    #[test]
+    fn config_file_rejects_missing_product() {
+        let err = config::Config::builder()
+            .add_source(config::File::from_str(
+                r#"
+site_domain = "example.atlassian.net"
+installation_id = "inst-123"
+
+[auth]
+raw_cookie = "tenant.session.token=a.b.c"
+"#,
+                config::FileFormat::Toml,
+            ))
+            .build()
+            .unwrap()
+            .try_deserialize::<FsrtRemoteConfig>()
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("product"), "got: {err}");
     }
 
     #[test]
@@ -1310,6 +1521,7 @@ raw_cookie = "tenant.session.token=a.b.c"
             .add_source(config::File::from_str(
                 r#"
 site_domain = "example.atlassian.net"
+product = "jira"
 cloud_id = "should-be-rejected"
 installation_id = "inst-123"
 
@@ -1327,15 +1539,36 @@ raw_cookie = "tenant.session.token=a.b.c"
     }
 
     #[test]
-    fn config_file_rejects_removed_keys() {
-        // Removed keys must fail to parse rather than be silently ignored.
-        // `product` at the top level.
+    fn config_file_rejects_environment_id_key() {
+        let err = config::Config::builder()
+            .add_source(config::File::from_str(
+                r#"
+site_domain = "example.atlassian.net"
+product = "jira"
+installation_id = "inst-123"
+environment_id = "env-should-be-resolved"
+
+[auth]
+raw_cookie = "tenant.session.token=a.b.c"
+"#,
+                config::FileFormat::Toml,
+            ))
+            .build()
+            .unwrap()
+            .try_deserialize::<FsrtRemoteConfig>()
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("environment_id"), "got: {err}");
+    }
+
+    #[test]
+    fn config_file_rejects_unsupported_product() {
         let err = config::Config::builder()
             .add_source(config::File::from_str(
                 r#"
 site_domain = "example.atlassian.net"
 installation_id = "inst-123"
-product = "global"
+product = "ecosystem"
 
 [auth]
 raw_cookie = "tenant.session.token=a.b.c"
@@ -1348,12 +1581,18 @@ raw_cookie = "tenant.session.token=a.b.c"
             .unwrap_err()
             .to_string();
         assert!(err.contains("product"), "got: {err}");
+        assert!(err.contains("ecosystem"), "got: {err}");
+    }
 
+    #[test]
+    fn config_file_rejects_removed_auth_keys() {
+        // Removed keys must fail to parse rather than be silently ignored.
         // `type` inside [auth].
         let err = config::Config::builder()
             .add_source(config::File::from_str(
                 r#"
 site_domain = "example.atlassian.net"
+product = "jira"
 installation_id = "inst-123"
 
 [auth]
@@ -1475,56 +1714,64 @@ raw_cookie = "tenant.session.token=a.b.c"
         }
     }
 
-    fn manifest_ctx_for(product: FctProduct) -> ManifestContext {
+    fn manifest_ctx() -> ManifestContext {
         ManifestContext {
             app_id: "ari:cloud:ecosystem::app/abc-123".to_string(),
             app_id_bare: "abc-123".to_string(),
             app_name: Some("My App".to_string()),
             module_key: Some("mod".to_string()),
             extension_type: "jira:globalPage".to_string(),
-            product,
             environment_id: Some("env-1".to_string()),
             app_version: Some("1".to_string()),
         }
     }
 
     #[test]
-    fn build_variables_global_uses_resolved_product_ari() {
-        // Jira app -> jira site ARI.
-        let vars = build_variables(
-            &global_config("cloud-jira"),
-            &manifest_ctx_for(FctProduct::Jira),
-        )
-        .unwrap();
-        assert_eq!(
-            vars["input"]["contextIds"][0],
-            json!("ari:cloud:jira::site/cloud-jira")
-        );
-
-        // JSM app -> jira-servicedesk site ARI (not jira), proving no hardcoding.
-        let vars = build_variables(
-            &global_config("cloud-jsm"),
-            &manifest_ctx_for(FctProduct::JiraServiceManagement),
-        )
-        .unwrap();
-        assert_eq!(
-            vars["input"]["contextIds"][0],
-            json!("ari:cloud:jira-servicedesk::site/cloud-jsm")
-        );
+    fn build_variables_uses_configured_product_ari() {
+        for (product, owner) in [
+            (FctProduct::Automation, "automation"),
+            (FctProduct::Chat, "chat"),
+            (FctProduct::Compass, "compass"),
+            (FctProduct::Confluence, "confluence"),
+            (FctProduct::Core, "core"),
+            (FctProduct::Directory, "directory"),
+            (FctProduct::Global, "global"),
+            (FctProduct::Graph, "graph"),
+            (FctProduct::Jira, "jira"),
+            (FctProduct::JiraCore, "jira-core"),
+            (FctProduct::JiraCustomerService, "jira-customer-service"),
+            (FctProduct::JiraProductDiscovery, "jira-product-discovery"),
+            (FctProduct::JiraServicedesk, "jira-servicedesk"),
+            (FctProduct::JiraSoftware, "jira-software"),
+            (FctProduct::Rovo, "rovo"),
+        ] {
+            let mut cfg = global_config("cloud-id");
+            cfg.product = product;
+            let vars = build_variables(&cfg, &manifest_ctx()).unwrap();
+            assert_eq!(
+                vars["input"]["contextIds"][0],
+                json!(format!("ari:cloud:{owner}::site/cloud-id"))
+            );
+        }
     }
 
     #[test]
     fn build_variables_confluence_uses_global_shape() {
         // A Confluence module now mints via the global-app shape, but still uses
         // the confluence-owned site ARI (product identity is preserved).
-        let cfg = global_config("cloud-conf");
-        let vars = build_variables(&cfg, &manifest_ctx_for(FctProduct::Confluence)).unwrap();
+        let mut cfg = global_config("cloud-conf");
+        cfg.product = FctProduct::Confluence;
+        let vars = build_variables(&cfg, &manifest_ctx()).unwrap();
 
         // Global shape: no top-level `cloudId`, uses `input.extensionContexts`.
         assert!(vars.get("cloudId").is_none(), "got: {vars}");
         assert_eq!(
             vars["input"]["contextIds"][0],
             json!("ari:cloud:confluence::site/cloud-conf")
+        );
+        assert_eq!(
+            vars["input"]["extensionContexts"][0]["extensionId"],
+            json!("ari:cloud:ecosystem::extension/abc-123/env-1/static/mod")
         );
         assert_eq!(
             vars["input"]["extensionContexts"][0]["installationId"],

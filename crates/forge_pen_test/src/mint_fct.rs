@@ -37,16 +37,18 @@ pub fn run_mint_fct(
     }
 
     let mut config = load_config(config_path)?;
+    let mut manifest_ctx = extract_manifest_context(manifest, module_key)?;
+    config
+        .product
+        .validate_manifest_module(module_key, &manifest_ctx.extension_type)?;
+
     // Derive `cloud_id` from `site_domain` (via `_edge/tenant_info`) when it is
     // not set explicitly in the config.
     config.resolve_cloud_id()?;
 
-    let mut manifest_ctx = extract_manifest_context(manifest, module_key)?;
-
-    // All apps mint via the global-app request shape; `manifest_ctx.product` is
-    // the manifest-declared product identity used to build the context ARI.
+    // All apps mint via the global-app request shape.
     info!(
-        product = ?manifest_ctx.product,
+        product = %config.product,
         app_id = %manifest_ctx.app_id,
         app_id_bare = %manifest_ctx.app_id_bare,
         app_name = ?manifest_ctx.app_name,
@@ -86,5 +88,41 @@ mod tests {
             assert!(matches!(err, MintError::Config(_)), "got: {err:?}");
             assert!(err.to_string().contains("module_key"));
         }
+    }
+
+    #[test]
+    fn run_mint_fct_rejects_product_mismatch_before_network_requests() {
+        let manifest: ForgeManifest<'_> = serde_json::from_str(
+            r#"{
+                "app": { "name": "My App", "id": "ari:cloud:ecosystem::app/app-1" },
+                "modules": {
+                    "jira:issuePanel": [{ "key": "jira-panel", "function": "handler" }]
+                }
+            }"#,
+        )
+        .unwrap();
+        let config = tempfile::Builder::new().suffix(".toml").tempfile().unwrap();
+        std::fs::write(
+            config.path(),
+            r#"
+site_domain = "network-must-not-be-called.invalid"
+product = "confluence"
+installation_id = "installation-1"
+
+[auth]
+raw_cookie = "tenant.session.token=a.b.c"
+"#,
+        )
+        .unwrap();
+
+        let err = run_mint_fct(&manifest, config.path(), "jira-panel", true)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("configured product 'confluence'"),
+            "got: {err}"
+        );
+        assert!(err.contains("jira-panel"), "got: {err}");
+        assert!(err.contains("jira:issuePanel"), "got: {err}");
     }
 }
