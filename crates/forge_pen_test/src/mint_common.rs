@@ -657,7 +657,7 @@ pub const APP_ENVIRONMENT_QUERY: &str = r#"query GetAppEnvironment($appId: ID!, 
       id
       key
       type
-      versions {
+      versions (first: 1) {
         nodes { version isLatest }
       }
     }
