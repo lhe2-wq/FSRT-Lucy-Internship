@@ -5,6 +5,7 @@ use forge_loader::manifest::{Entrypoint, ForgeManifest, Resolved};
 use forge_permission_resolver::permissions_resolver::PermMap;
 use serde_yaml::Error as YamlError;
 use std::collections::HashSet;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use swc_core::common::{GLOBALS, Globals, Mark, SourceFile, SourceMap};
@@ -13,6 +14,22 @@ use swc_core::ecma::parser::{Syntax, TsSyntax, parse_file_as_module};
 use swc_core::ecma::transforms::base::resolver;
 use swc_core::ecma::visit::VisitMutWith;
 use tracing::debug;
+
+pub(crate) fn find_manifest_path(app_dir: &Path) -> io::Result<PathBuf> {
+    ["manifest.yaml", "manifest.yml"]
+        .into_iter()
+        .map(|name| app_dir.join(name))
+        .find(|path| path.exists())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "Could not find manifest.yml or manifest.yaml in {}",
+                    app_dir.display()
+                ),
+            )
+        })
+}
 
 pub(crate) trait ForgeProjectTrait<'a> {
     fn load_file(&self, path: impl AsRef<Path>, _: Arc<SourceMap>) -> Arc<SourceFile>;
@@ -138,5 +155,34 @@ impl ForgeProjectTrait<'_> for ForgeProjectFromDir {
 
     fn get_manifest(&self) -> Result<ForgeManifest<'_>, YamlError> {
         serde_yaml::from_str(&self.manifest_file_content)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use tempfile::tempdir;
+
+    use super::find_manifest_path;
+
+    #[test]
+    fn finds_supported_manifest_names() {
+        for name in ["manifest.yaml", "manifest.yml"] {
+            let app_dir = tempdir().unwrap();
+            let expected = app_dir.path().join(name);
+            fs::write(&expected, "").unwrap();
+
+            assert_eq!(find_manifest_path(app_dir.path()).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn reports_missing_manifest() {
+        let app_dir = tempdir().unwrap();
+        let error = find_manifest_path(app_dir.path()).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        assert!(error.to_string().contains("manifest.yml or manifest.yaml"));
     }
 }

@@ -778,6 +778,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "swc_core",
+ "tempfile",
  "tracing",
  "tracing-subscriber",
  "tracing-tree",
