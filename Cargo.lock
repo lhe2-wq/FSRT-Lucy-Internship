@@ -769,6 +769,7 @@ dependencies = [
  "forge_analyzer",
  "forge_file_resolver",
  "forge_loader",
+ "forge_pen_test",
  "forge_permission_resolver",
  "glob",
  "graphql-parser",
