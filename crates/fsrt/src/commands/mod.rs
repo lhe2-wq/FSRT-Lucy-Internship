@@ -2,6 +2,7 @@ use clap::Subcommand;
 
 use crate::Result;
 
+pub(crate) mod invoke_extension;
 #[cfg(feature = "mint_cookie")]
 pub(crate) mod mint_cookie;
 pub(crate) mod mint_fct;
@@ -10,6 +11,9 @@ pub(crate) mod mint_fit;
 /// CLI subcommands.
 #[derive(Subcommand, Debug)]
 pub(crate) enum Command {
+    /// Invoke a resolver-backed extension with a tester-controlled payload.
+    InvokeExtension(invoke_extension::InvokeExtensionArgs),
+
     /// Harvest an Atlassian session cookie using Chrome.
     #[cfg(feature = "mint_cookie")]
     MintCookie(mint_cookie::MintCookieArgs),
@@ -24,6 +28,7 @@ pub(crate) enum Command {
 impl Command {
     pub(crate) fn diagnostic_logging_requested(&self) -> bool {
         match self {
+            Self::InvokeExtension(args) => args.diagnostic_logging_requested(),
             #[cfg(feature = "mint_cookie")]
             Self::MintCookie(args) => args.diagnostic_logging_requested(),
             Self::MintFct(args) => args.diagnostic_logging_requested(),
@@ -33,6 +38,7 @@ impl Command {
 
     pub(crate) fn run(&self) -> Result<()> {
         match self {
+            Self::InvokeExtension(args) => invoke_extension::run(args),
             #[cfg(feature = "mint_cookie")]
             Self::MintCookie(args) => mint_cookie::run(args),
             Self::MintFct(args) => mint_fct::run(args),
@@ -83,5 +89,37 @@ mod tests {
                 .as_ref()
                 .is_some_and(Command::diagnostic_logging_requested)
         );
+    }
+
+    #[test]
+    fn tooling_subcommands_parse_and_route_diagnostics() {
+        for argv in [
+            vec![
+                "fsrt",
+                "mint-fit",
+                "module-key",
+                "--remote-key",
+                "backend",
+                "--dry-run",
+            ],
+            vec![
+                "fsrt",
+                "invoke-extension",
+                "--function",
+                "resolver-fn",
+                "--payload",
+                "{}",
+                "--module-key",
+                "module-key",
+                "--dry-run",
+            ],
+        ] {
+            let args = Args::try_parse_from(argv).unwrap();
+            assert!(
+                args.command
+                    .as_ref()
+                    .is_some_and(Command::diagnostic_logging_requested)
+            );
+        }
     }
 }
