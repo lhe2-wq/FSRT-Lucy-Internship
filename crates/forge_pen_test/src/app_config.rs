@@ -54,11 +54,20 @@ impl ExtensionConfig {
         &self.extension_type
     }
 
-    fn module_key(&self) -> &str {
+    /// Returns the module key encoded in the extension ARI.
+    pub fn module_key(&self) -> &str {
         self.extension_id
             .rsplit_once('/')
             .map(|(_, module_key)| module_key)
             .expect("validated extension ID contains a module key")
+    }
+
+    /// Returns the environment ID encoded in the extension ARI.
+    pub fn environment_id(&self) -> &str {
+        self.extension_id
+            .strip_prefix("ari:cloud:ecosystem::extension/")
+            .and_then(|value| value.split('/').nth(1))
+            .expect("validated extension ID contains an environment ID")
     }
 }
 
@@ -172,6 +181,40 @@ impl AppConfig {
     pub fn installation_id(&self) -> &str {
         &self.installation_id
     }
+
+    /// Returns the product encoded in the context ARI.
+    pub fn product(&self) -> &str {
+        self.context_id
+            .strip_prefix("ari:cloud:")
+            .and_then(|value| value.split_once("::site/"))
+            .map(|(product, _)| product)
+            .expect("validated context ID contains a product")
+    }
+
+    /// Returns the cloud ID encoded in the context ARI.
+    pub fn cloud_id(&self) -> &str {
+        self.context_id
+            .split_once("::site/")
+            .map(|(_, cloud_id)| cloud_id)
+            .expect("validated context ID contains a cloud ID")
+    }
+
+    /// Builds the shared FCT signing variables for a deployed module.
+    pub fn build_fct_variables(&self, module_key: &str) -> Result<serde_json::Value, MintError> {
+        let extension = self.extension_for_module_key(module_key)?;
+        Ok(serde_json::json!({
+            "input": {
+                "contextIds": [self.context_id()],
+                "extensionContexts": [{
+                    "appVersion": self.app_version(),
+                    "context": {},
+                    "extensionId": extension.extension_id(),
+                    "extensionType": extension.extension_type(),
+                    "installationId": self.installation_id()
+                }]
+            }
+        }))
+    }
 }
 
 fn require_value(name: &str, value: String) -> Result<String, MintError> {
@@ -232,6 +275,10 @@ mod tests {
                 .extension_type(),
             "xen:macro"
         );
+        assert_eq!(config.product(), "jira");
+        assert_eq!(config.cloud_id(), "cloud-1");
+        assert_eq!(config.extensions()[0].module_key(), "first-module");
+        assert_eq!(config.extensions()[0].environment_id(), "environment-1");
     }
 
     #[test]

@@ -38,20 +38,7 @@ pub(super) fn run(args: &MintFctArgs) -> Result<()> {
     let config = forge_pen_test::FsrtRemoteConfig::from_path(&args.config)?;
     let tester = forge_pen_test::ForgePenTester::new(&manifest, config, &args.module_key)?;
     if args.dry_run {
-        let config = tester.config();
-        let extension = config.extension_for_module_key(&args.module_key)?;
-        let variables = serde_json::json!({
-            "input": {
-                "contextIds": [config.context_id()],
-                "extensionContexts": [{
-                    "appVersion": config.app_version(),
-                    "context": {},
-                    "extensionId": extension.extension_id(),
-                    "extensionType": extension.extension_type(),
-                    "installationId": config.installation_id()
-                }]
-            }
-        });
+        let variables = tester.config().build_fct_variables(&args.module_key)?;
         println!("{}", serde_json::to_string_pretty(&variables)?);
     } else {
         println!("{}", tester.mint_fct(&args.module_key)?);
