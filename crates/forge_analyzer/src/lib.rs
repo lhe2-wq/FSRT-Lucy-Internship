@@ -5,6 +5,7 @@ pub mod interp;
 pub mod ir;
 pub mod lattice;
 pub mod pretty;
+pub mod remote_paths;
 pub mod reporter;
 pub mod utils;
 pub mod worklist;

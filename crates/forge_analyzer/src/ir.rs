@@ -83,6 +83,9 @@ pub enum Intrinsic {
     SecretFunction(PackageData),
     EnvRead,
     StorageRead,
+    /// A `invokeRemote(remoteKey, options)` call from `@forge/api`.
+    /// Used by the Forge Remote scanner to enumerate egress endpoints.
+    InvokeRemote,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -340,6 +343,11 @@ impl Body {
             dominator_tree: Default::default(),
             blockbuilders: vec![BasicBlockBuilder { insts: Vec::new() }].into(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test() -> Self {
+        Self::new()
     }
 
     #[inline]
@@ -1132,6 +1140,7 @@ impl fmt::Display for Intrinsic {
             Intrinsic::SafeCall(_) => write!(f, "safe api call"),
             Intrinsic::EnvRead => write!(f, "env read"),
             Intrinsic::StorageRead => write!(f, "forge storage read"),
+            Intrinsic::InvokeRemote => write!(f, "invoke remote"),
         }
     }
 }
