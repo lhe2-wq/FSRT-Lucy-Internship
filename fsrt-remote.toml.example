@@ -1,0 +1,25 @@
+# Copy to `fsrt-remote.toml`. The local file is ignored.
+
+# Full Atlassian site URL used to resolve cloud_id.
+site = "https://your-site.atlassian.net"
+
+# Context ARI owner, such as "jira" or "confluence".
+product = "jira"
+
+# Forge installation ID.
+installation_id = "00000000-0000-0000-0000-000000000000"
+
+# Override automatic production/default environment selection.
+# environment_key = "production"
+
+# Authentication material. Do not commit this file.
+# Relative paths use the directory where FSRT is run.
+[auth]
+raw_cookie_file = "./session-cookie.txt"
+
+# Optional settings used only by `fsrt mint-cookie`.
+# The password is read from ATL_PASSWORD and must never be stored here.
+[cookie]
+username = "tester@example.com"
+headed = true
+verify_wait_secs = 120

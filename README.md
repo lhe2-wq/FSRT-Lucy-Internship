@@ -9,10 +9,16 @@ A static analysis tool for finding common [Forge][1] vulnerabilities.
 ## Usage
 
 ```text
-Usage: fsrt [OPTIONS] [DIRS]...
+Usage: fsrt [OPTIONS] [DIRS]... [COMMAND]
 
 Arguments:
   [DIRS]...  The directory to scan. Assumes there is a `manifest.yaml` file in the top level directory, and that the source code is located in `src/`
+
+Commands:
+  mint-fct          Mint an FCT for a deployed module
+  mint-fit          Mint a Forge Invocation Token for a remote backend
+  invoke-extension  Invoke a resolver-backed extension
+  mint-cookie       Harvest a browser session cookie (requires `--features mint_cookie`)
 
   Options:
     -d, --debug
@@ -21,11 +27,14 @@ Arguments:
     -f, --function <FUNCTION>               A specific function to scan, must be an entrypoint specified in `manifest.yml`
     -h, --help                              Print help information
     -V, --version                           Print version information
+    --verbose                               Print diagnostics to stderr
     --check-permissions                     Runs the permission checker
     --cached-permissions                    Uses cached swagger permissions to avoid redownloading them
-    --cached-permissions-path <LOCATION>    Uses the designated cache location, otherwise selects ~/.cache dir 
-    --graphql-schema-path <LOCATION>        Uses the graphql schema in location; othwerwise selects ~/.config dir  
+    --cached-permissions-path <LOCATION>    Uses the designated cache location, otherwise selects ~/.cache dir
+    --graphql-schema-path <LOCATION>        Uses the graphql schema in location; othwerwise selects ~/.config dir
 ```
+
+Run `fsrt --help` or `fsrt <COMMAND> --help` for current options.
 
 ## Installation
 
@@ -52,6 +61,29 @@ or alternatively:
 ```text
 cargo install --git https://github.com/atlassian-labs/FSRT --locked
 ```
+
+## Forge tooling commands
+
+The dynamic-testing commands share a TOML configuration (default
+`./fsrt-remote.toml`) and deployment-resolution client. Start from
+[`fsrt-remote.toml.example`](fsrt-remote.toml.example). See
+[`FORGE_TOOLING.md`](FORGE_TOOLING.md) for the architecture, request flows, and
+security boundaries.
+
+- `mint-fct <MODULE_KEY>` mints a Forge Context Token for a deployed module.
+- `mint-fit [MODULE_KEY]` mints an FCT and exchanges it for a Forge Invocation
+  Token. The module and Forge Remote can be detected from `manifest.yml` or
+  supplied explicitly.
+- `invoke-extension --function <KEY> --payload <JSON>` invokes a resolver with a
+  tester-controlled payload. Use `--dry-run` to inspect the request variables.
+- `mint-cookie` drives Chrome to harvest `tenant.session.token`. Build FSRT with
+  `--features mint_cookie` and supply the account password through
+  `ATL_PASSWORD`; the password is never accepted as a CLI argument.
+
+Dry runs resolve live deployment metadata but skip token signing and invocation.
+`site` must be a full `https://<site>.atlassian.net` URL. `installation_id` and
+`[auth].raw_cookie_file` are required. Cookie files and `fsrt-remote.toml`
+contain authentication or tenant-specific data and must not be committed.
 
 ## Tests
 
