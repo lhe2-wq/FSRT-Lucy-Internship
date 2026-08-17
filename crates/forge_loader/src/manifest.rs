@@ -47,6 +47,19 @@ impl<'a> HasFunctions<'a> for CommonKey<'a> {
     }
 }
 
+impl<'a> CommonKey<'a> {
+    fn resolver_function(&self) -> Option<&'a str> {
+        self.function
+            .or_else(|| self.resolver.and_then(|resolver| resolver.function))
+    }
+}
+
+impl<'a> MacroMod<'a> {
+    fn resolver_function(&self) -> Option<&'a str> {
+        self.common_keys.resolver_function()
+    }
+}
+
 impl<'a> HasFunctions<'a> for JustFunc<'a> {
     fn append_functions<I: Extend<&'a str>>(&self, funcs: &mut I) {
         funcs.extend(self.function);
@@ -495,6 +508,8 @@ where
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Remotes {
+    #[serde(default)]
+    pub key: String,
     #[serde(default)]
     pub auth: Value,
 }
@@ -968,6 +983,108 @@ impl<'a> ForgeModules<'a> {
                 web_trigger,
                 admin,
             })
+        })
+    }
+}
+
+const FCT_MODULE_TYPE_COUNT: usize = 6;
+type FctModulesWithFunctions<'a> =
+    [(&'static str, Vec<(&'a str, Option<&'a str>)>); FCT_MODULE_TYPE_COUNT];
+
+impl<'a> ForgeModules<'a> {
+    fn preferred_fct_modules_with_functions(&self) -> FctModulesWithFunctions<'a> {
+        [
+            (
+                "macro",
+                self.macros
+                    .iter()
+                    .map(|module| (module.common_keys.key, module.resolver_function()))
+                    .collect(),
+            ),
+            (
+                "globalPage",
+                self.confluence_global_page
+                    .iter()
+                    .map(|module| (module.key, module.resolver_function()))
+                    .collect(),
+            ),
+            (
+                "spacePage",
+                self.space_page
+                    .iter()
+                    .map(|module| (module.key, module.resolver_function()))
+                    .collect(),
+            ),
+            (
+                "globalPage",
+                self.jira_global_page
+                    .iter()
+                    .map(|module| (module.key, module.resolver_function()))
+                    .collect(),
+            ),
+            (
+                "issuePanel",
+                self.issue_panel
+                    .iter()
+                    .map(|module| (module.key, module.resolver_function()))
+                    .collect(),
+            ),
+            (
+                "globalPage",
+                self.project_page
+                    .iter()
+                    .map(|module| (module.key, module.resolver_function()))
+                    .collect(),
+            ),
+        ]
+    }
+
+    /// Returns the first module supported by the Forge tooling workflow.
+    pub fn detect_fct_module(&self) -> Option<(&'a str, &'static str)> {
+        self.preferred_fct_modules_with_functions()
+            .into_iter()
+            .find_map(|(module_type, modules)| {
+                modules
+                    .into_iter()
+                    .next()
+                    .map(|(module_key, _)| (module_key, module_type))
+            })
+    }
+
+    /// Returns the first module wired to the requested resolver function.
+    pub fn detect_fct_module_for_function(
+        &self,
+        function: &str,
+    ) -> Option<(&'a str, &'static str)> {
+        self.preferred_fct_modules_with_functions()
+            .into_iter()
+            .find_map(|(module_type, modules)| {
+                modules
+                    .into_iter()
+                    .find(|(_, resolver_function)| *resolver_function == Some(function))
+                    .map(|(module_key, _)| (module_key, module_type))
+            })
+    }
+
+    /// Returns the manifest module type for a supported module key.
+    pub fn fct_module_type_for_key(&self, key: &str) -> Option<&'static str> {
+        self.preferred_fct_modules_with_functions()
+            .into_iter()
+            .find_map(|(module_type, modules)| {
+                modules
+                    .iter()
+                    .any(|(module_key, _)| *module_key == key)
+                    .then_some(module_type)
+            })
+    }
+}
+
+impl<'a> ForgeManifest<'a> {
+    /// Returns the first non-empty Forge Remote key.
+    pub fn detect_remote_key(&self) -> Option<&str> {
+        self.remotes.as_ref()?.iter().find_map(|remote| {
+            let key = remote.key.trim();
+            (!key.is_empty()).then_some(key)
         })
     }
 }
@@ -1477,5 +1594,36 @@ permissions:
         ));
         assert!(!is_hardcoded_variable("{{prefix}}_{{suffix}}"));
         assert!(!is_hardcoded_variable("     {{client_secret}}     "));
+    }
+
+    #[test]
+    fn detects_tooling_module_and_remote_metadata() {
+        let json = r#"{
+            "app": { "name": "Test App", "id": "test-app" },
+            "modules": {
+                "macro": [
+                    { "key": "first-macro", "resolver": { "endpoint": "remote" } },
+                    { "key": "resolver-macro", "resolver": { "function": "resolver-fn" } }
+                ]
+            },
+            "remotes": [{ "key": "backend", "baseUrl": "https://example.com" }]
+        }"#;
+        let manifest: ForgeManifest<'_> = serde_json::from_str(json).unwrap();
+
+        assert_eq!(
+            manifest.modules.detect_fct_module(),
+            Some(("first-macro", "macro"))
+        );
+        assert_eq!(
+            manifest
+                .modules
+                .detect_fct_module_for_function("resolver-fn"),
+            Some(("resolver-macro", "macro"))
+        );
+        assert_eq!(
+            manifest.modules.fct_module_type_for_key("resolver-macro"),
+            Some("macro")
+        );
+        assert_eq!(manifest.detect_remote_key(), Some("backend"));
     }
 }

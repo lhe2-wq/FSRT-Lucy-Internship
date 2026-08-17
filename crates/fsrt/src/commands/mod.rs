@@ -3,24 +3,30 @@ use clap::Subcommand;
 use crate::Result;
 
 pub(crate) mod mint_fct;
+pub(crate) mod mint_fit;
 
 /// CLI subcommands.
 #[derive(Subcommand, Debug)]
 pub(crate) enum Command {
     /// Mint an FCT for a deployed module.
     MintFct(mint_fct::MintFctArgs),
+
+    /// Mint a Forge Invocation Token for a remote backend.
+    MintFit(mint_fit::MintFitArgs),
 }
 
 impl Command {
     pub(crate) fn diagnostic_logging_requested(&self) -> bool {
         match self {
             Self::MintFct(args) => args.diagnostic_logging_requested(),
+            Self::MintFit(args) => args.diagnostic_logging_requested(),
         }
     }
 
     pub(crate) fn run(&self) -> Result<()> {
         match self {
             Self::MintFct(args) => mint_fct::run(args),
+            Self::MintFit(args) => mint_fit::run(args),
         }
     }
 }

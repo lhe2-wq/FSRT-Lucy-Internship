@@ -61,6 +61,12 @@ pub enum MintError {
     #[error("FCT minting failed: {0}")]
     FctFailed(String),
 
+    #[error("FIT minting failed: {0}")]
+    FitFailed(String),
+
+    #[error("extension invocation failed: {0}")]
+    InvocationFailed(String),
+
     #[error("environment '{environment_key}' was not found for app {app_id}")]
     EnvironmentNotFound {
         environment_key: String,
