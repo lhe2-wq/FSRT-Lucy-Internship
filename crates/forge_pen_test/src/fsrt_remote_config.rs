@@ -24,6 +24,9 @@ pub struct FsrtRemoteConfig {
 
     /// Optional Forge environment override.
     pub environment_key: Option<String>,
+
+    /// Optional browser-session harvesting configuration.
+    pub cookie: Option<CookieConfig>,
 }
 
 /// Session-cookie file configuration.
@@ -32,6 +35,20 @@ pub struct FsrtRemoteConfig {
 pub struct AuthConfig {
     /// File containing the Forge session cookie.
     pub raw_cookie_file: String,
+}
+
+/// Browser-session harvesting configuration.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CookieConfig {
+    /// Atlassian account email address.
+    pub username: String,
+
+    /// Whether Chrome should be visible by default.
+    pub headed: Option<bool>,
+
+    /// Maximum time to wait for a manual login step.
+    pub verify_wait_secs: Option<u64>,
 }
 
 impl FsrtRemoteConfig {

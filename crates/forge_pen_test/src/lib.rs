@@ -9,5 +9,5 @@ mod mint_common;
 pub use app_config::{AppConfig, ExtensionConfig};
 pub use fit::ForgeInvocationToken;
 pub use forge_pentester::ForgePenTester;
-pub use fsrt_remote_config::{AuthConfig, FsrtRemoteConfig};
+pub use fsrt_remote_config::{AuthConfig, CookieConfig, FsrtRemoteConfig};
 pub use mint_common::{GraphQLError, JwtValidity, MintError};

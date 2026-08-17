@@ -2,12 +2,18 @@ use clap::Subcommand;
 
 use crate::Result;
 
+#[cfg(feature = "mint_cookie")]
+pub(crate) mod mint_cookie;
 pub(crate) mod mint_fct;
 pub(crate) mod mint_fit;
 
 /// CLI subcommands.
 #[derive(Subcommand, Debug)]
 pub(crate) enum Command {
+    /// Harvest an Atlassian session cookie using Chrome.
+    #[cfg(feature = "mint_cookie")]
+    MintCookie(mint_cookie::MintCookieArgs),
+
     /// Mint an FCT for a deployed module.
     MintFct(mint_fct::MintFctArgs),
 
@@ -18,6 +24,8 @@ pub(crate) enum Command {
 impl Command {
     pub(crate) fn diagnostic_logging_requested(&self) -> bool {
         match self {
+            #[cfg(feature = "mint_cookie")]
+            Self::MintCookie(args) => args.diagnostic_logging_requested(),
             Self::MintFct(args) => args.diagnostic_logging_requested(),
             Self::MintFit(args) => args.diagnostic_logging_requested(),
         }
@@ -25,6 +33,8 @@ impl Command {
 
     pub(crate) fn run(&self) -> Result<()> {
         match self {
+            #[cfg(feature = "mint_cookie")]
+            Self::MintCookie(args) => mint_cookie::run(args),
             Self::MintFct(args) => mint_fct::run(args),
             Self::MintFit(args) => mint_fit::run(args),
         }
