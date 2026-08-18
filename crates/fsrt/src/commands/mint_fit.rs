@@ -15,6 +15,10 @@ pub(crate) struct MintFitArgs {
     #[arg(long)]
     remote_key: Option<String>,
 
+    /// Reuse this FCT instead of minting one.
+    #[arg(long)]
+    fct: Option<String>,
+
     /// Forge app directory.
     #[arg(long, default_value = ".", value_hint = ValueHint::DirPath)]
     app_dir: PathBuf,
@@ -66,14 +70,31 @@ pub(super) fn run(args: &MintFitArgs) -> Result<()> {
                 "No Forge Remote was found; pass --remote-key explicitly".to_string(),
             )
         })?;
+    let provided_fct = match args.fct.as_deref() {
+        Some(fct) if fct.trim().is_empty() => {
+            return Err(
+                forge_pen_test::MintError::Config("--fct must not be empty".to_string()).into(),
+            );
+        }
+        Some(fct) => Some(fct.trim()),
+        None => None,
+    };
 
     let config = forge_pen_test::FsrtRemoteConfig::from_path(&args.config)?;
     let tester = forge_pen_test::ForgePenTester::new(&manifest, config, module_key)?;
     if args.dry_run {
-        let variables = tester.build_fit_variables(remote_key, "<FCT JWT minted at runtime>")?;
+        let fct_preview = if provided_fct.is_some() {
+            "<provided FCT redacted>"
+        } else {
+            "<FCT JWT minted at runtime>"
+        };
+        let variables = tester.build_fit_variables(remote_key, fct_preview)?;
         println!("{}", serde_json::to_string_pretty(&variables)?);
     } else {
-        let token = tester.mint_fit(module_key, remote_key)?;
+        let token = match provided_fct {
+            Some(fct) => tester.mint_fit_with_fct(remote_key, fct)?,
+            None => tester.mint_fit(module_key, remote_key)?,
+        };
         println!("{}", token.jwt());
         if let Some(expires_at) = token.expires_at() {
             tracing::info!(expires_at, "minted Forge Invocation Token");
@@ -81,4 +102,30 @@ pub(super) fn run(args: &MintFitArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use crate::{Args as RootArgs, commands::Command};
+
+    #[test]
+    fn parses_fct_override() {
+        let args = RootArgs::try_parse_from([
+            "fsrt",
+            "mint-fit",
+            "module-key",
+            "--remote-key",
+            "backend",
+            "--fct",
+            "provided-token",
+        ])
+        .unwrap();
+
+        let Some(Command::MintFit(args)) = args.command else {
+            panic!("expected mint-fit command");
+        };
+        assert_eq!(args.fct.as_deref(), Some("provided-token"));
+    }
 }

@@ -72,8 +72,8 @@ security boundaries.
 
 - `mint-fct <MODULE_KEY>` mints a Forge Context Token for a deployed module.
 - `mint-fit [MODULE_KEY]` mints an FCT and exchanges it for a Forge Invocation
-  Token. The module and Forge Remote can be detected from `manifest.yml` or
-  supplied explicitly.
+  Token. Pass `--fct <JWT>` to exchange an existing FCT instead. The module and
+  Forge Remote can be detected from `manifest.yml` or supplied explicitly.
 - `invoke-extension --function <KEY> --payload <JSON>` invokes a resolver with a
   tester-controlled payload. Use `--dry-run` to inspect the request variables.
 - `mint-cookie` drives Chrome to harvest `tenant.session.token`. Build FSRT with

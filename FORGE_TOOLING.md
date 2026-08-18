@@ -53,8 +53,10 @@ do not submit the signing mutation.
 ### FIT
 
 The command selects a module and Forge Remote from explicit arguments or the
-manifest. It mints an FCT in memory and submits `signInvocationTokenForUI` with
-that token and the remote key. The intermediate FCT is never written to disk.
+manifest. By default it mints an FCT in memory, then submits
+`signInvocationTokenForUI` with that token and the remote key. `--fct <JWT>`
+uses a caller-provided FCT and skips the FCT signing mutation. Neither supplied
+nor intermediate FCTs are printed by dry runs or written to disk.
 
 ### Extension invocation
 
@@ -85,6 +87,9 @@ never prints the credential value.
 - `fsrt-remote.toml`, cookie files, and session-token notes are ignored.
 - The cookie and `ATL_PASSWORD` must not be placed in command arguments, logs,
   tickets, commits, or chat.
+- `--fct` is intentionally available for replay testing, but places a bearer
+  token in process arguments and potentially shell history. Use it only in a
+  controlled environment and clear the relevant history afterward.
 - JWT inspection verifies structure and expiry, not cryptographic signatures.
 - Atlassian remains responsible for authenticating the browser session and
   signing returned tokens.

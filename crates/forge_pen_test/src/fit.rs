@@ -82,7 +82,16 @@ impl ForgePenTester<'_, '_> {
         remote_key: &str,
     ) -> Result<ForgeInvocationToken, MintError> {
         let fct = self.mint_fct(module_key)?;
-        let variables = self.build_fit_variables(remote_key, &fct)?;
+        self.mint_fit_with_fct(remote_key, &fct)
+    }
+
+    /// Exchanges a caller-provided FCT for a FIT.
+    pub fn mint_fit_with_fct(
+        &self,
+        remote_key: &str,
+        forge_context_token: &str,
+    ) -> Result<ForgeInvocationToken, MintError> {
+        let variables = self.build_fit_variables(remote_key, forge_context_token)?;
         let data: FitData = self.post_graphql(FIT_OPERATION_NAME, FIT_MUTATION, &variables)?;
 
         let token = data.result.and_then(|result| result.token).ok_or_else(|| {
