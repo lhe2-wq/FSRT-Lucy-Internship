@@ -22,6 +22,18 @@ pub(crate) enum Command {
     MintFct(mint_fct::MintFctArgs),
 
     /// Mint a Forge Invocation Token for a remote backend.
+    ///
+    /// Required at runtime:
+    ///   - A Forge manifest in the app directory.
+    ///   - An `fsrt-remote.toml` config and its referenced session-cookie file.
+    ///   - A deployed module key, supplied as MODULE_KEY or detected from the manifest.
+    ///   - A Forge Remote key, supplied with --remote-key or detected from the manifest.
+    ///
+    /// Optional:
+    ///   - --fct reuses an existing FCT; otherwise, a new FCT is minted.
+    ///   - MODULE_KEY, --remote-key, --app-dir, and --config override detected/default values.
+    ///   - --dry-run prints the resolved request without minting tokens.
+    #[command(verbatim_doc_comment)]
     MintFit(mint_fit::MintFitArgs),
 }
 

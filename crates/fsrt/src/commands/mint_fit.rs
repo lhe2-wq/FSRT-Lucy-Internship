@@ -7,27 +7,27 @@ use crate::{Result, forge_project::find_manifest_path};
 /// `mint-fit` arguments.
 #[derive(Args, Debug)]
 pub(crate) struct MintFitArgs {
-    /// Deployed module key. Defaults to the first supported manifest module.
+    /// Optional override. Required only when no supported manifest module can be detected.
     #[arg(name = "MODULE_KEY")]
     module_key: Option<String>,
 
-    /// Forge Remote key. Defaults to the first remote in the manifest.
+    /// Optional override. Required only when no Forge Remote can be detected.
     #[arg(long)]
     remote_key: Option<String>,
 
-    /// Reuse this FCT instead of minting one.
+    /// Optional. Reuse this FCT instead of minting one.
     #[arg(long)]
     fct: Option<String>,
 
-    /// Forge app directory.
+    /// Optional. Forge app directory containing the manifest.
     #[arg(long, default_value = ".", value_hint = ValueHint::DirPath)]
     app_dir: PathBuf,
 
-    /// Path to `fsrt-remote.toml`.
+    /// Optional. Path to the required `fsrt-remote.toml` config.
     #[arg(long, default_value = "./fsrt-remote.toml", value_hint = ValueHint::FilePath)]
     config: PathBuf,
 
-    /// Resolve metadata and print variables without minting tokens.
+    /// Optional. Resolve metadata and print variables without minting tokens.
     #[arg(long, default_value_t = false)]
     dry_run: bool,
 }
@@ -106,7 +106,7 @@ pub(super) fn run(args: &MintFitArgs) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use clap::Parser;
+    use clap::{CommandFactory, Parser};
 
     use crate::{Args as RootArgs, commands::Command};
 
@@ -127,5 +127,20 @@ mod tests {
             panic!("expected mint-fit command");
         };
         assert_eq!(args.fct.as_deref(), Some("provided-token"));
+    }
+
+    #[test]
+    fn help_explains_required_and_optional_inputs() {
+        let mut command = RootArgs::command();
+        let help = command
+            .find_subcommand_mut("mint-fit")
+            .expect("mint-fit subcommand should exist")
+            .render_long_help()
+            .to_string();
+
+        assert!(help.contains("Required at runtime:"));
+        assert!(help.contains("Optional:"));
+        assert!(help.contains("Required only when no supported manifest module can be detected"));
+        assert!(help.contains("Required only when no Forge Remote can be detected"));
     }
 }
